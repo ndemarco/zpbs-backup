@@ -1,0 +1,27 @@
+[Unit]
+Description=ZFS property-driven Proxmox Backup Server backup
+Documentation=https://github.com/ndemarco/zpbs-backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zpbs-backup run
+# Load PBS credentials from file if not in environment
+EnvironmentFile=-/etc/zpbs-backup/pbs.conf
+EnvironmentFile=-/root/.zpbs-backup.conf
+# Prevent multiple simultaneous runs
+ExecStartPre=/bin/sh -c '! pgrep -f "zpbs-backup run"'
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+# Need network for PBS
+PrivateNetwork=false
+# Need access to ZFS commands
+ReadWritePaths=/dev/zfs
+
+[Install]
+WantedBy=multi-user.target

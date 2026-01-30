@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily ZFS backup to Proxmox Backup Server
+Documentation=https://github.com/ndemarco/zpbs-backup
+
+[Timer]
+# Run daily at 2:00 AM
+OnCalendar=*-*-* 02:00:00
+# Add random delay up to 15 minutes to avoid thundering herd
+RandomizedDelaySec=900
+# Run immediately if we missed the scheduled time (e.g., system was off)
+Persistent=true
+
+[Install]
+WantedBy=timers.target
