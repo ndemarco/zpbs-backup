@@ -192,17 +192,27 @@ class PBSClient:
     def create_namespace(self, namespace: str) -> bool:
         """Create a namespace if it doesn't exist.
 
+        Creates parent namespaces as needed for nested paths like
+        'storage-server/files-fast/orgs'.
+
         Args:
             namespace: The namespace to create (e.g., 'storage-server/tank')
 
         Returns:
             True if created or already exists, False on error
         """
-        # Try to create - will fail if already exists, which is fine
-        result = self._run(["namespace", "create", namespace], check=False)
-        # Return code 0 = created, other = already exists or error
-        # We don't really care about the distinction
-        return result.returncode == 0 or "already exists" in result.stderr.lower()
+        # Create each level of the namespace hierarchy
+        parts = namespace.split("/")
+        for i in range(1, len(parts) + 1):
+            partial_ns = "/".join(parts[:i])
+            result = self._run(["namespace", "create", partial_ns], check=False)
+            # Continue even if it already exists
+            if result.returncode != 0 and "already exists" not in result.stderr.lower():
+                # Real error - but only fail on the final namespace
+                if i == len(parts):
+                    return False
+
+        return True
 
     def prune(
         self,

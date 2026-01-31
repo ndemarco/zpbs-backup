@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,32 +59,38 @@ def load_config() -> PBSConfig:
             fingerprint=fingerprint,
         )
 
-    # Try config files
+    # Try config files - merge variables from multiple files
     config_paths = [
         Path("/etc/zpbs-backup/pbs.conf"),
         Path("/root/.zpbs-backup.conf"),
+        Path("/root/proxmox-backup.conf"),
         Path("/root/.proxmox-backup-secrets"),
     ]
 
+    merged_vars: dict[str, str] = {}
     for config_path in config_paths:
         if config_path.exists():
-            config = _parse_config_file(config_path)
-            if config.repository:
-                return config
+            file_vars = _parse_config_variables(config_path, merged_vars)
+            merged_vars.update(file_vars)
+
+    config = _config_from_variables(merged_vars)
+    if config.repository:
+        return config
 
     raise ValueError(
         "PBS_REPOSITORY not configured. Set environment variable or create config file."
     )
 
 
-def _parse_config_file(path: Path) -> PBSConfig:
-    """Parse a PBS config file.
+def _parse_config_variables(
+    path: Path, existing_vars: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Parse variables from a config file.
 
     Supports both shell-style (VAR=value) and simple key=value formats.
+    Handles shell variable interpolation like ${VAR} and $VAR.
     """
-    repository = None
-    password = None
-    fingerprint = None
+    variables: dict[str, str] = dict(existing_vars) if existing_vars else {}
 
     with open(path) as f:
         for line in f:
@@ -102,15 +109,29 @@ def _parse_config_file(path: Path) -> PBSConfig:
             key = key.strip()
             value = value.strip().strip("'\"")
 
-            if key in ("PBS_REPOSITORY", "REPOSITORY"):
-                repository = value
-            elif key in ("PBS_PASSWORD", "PASSWORD"):
-                password = value
-            elif key in ("PBS_FINGERPRINT", "FINGERPRINT"):
-                fingerprint = value
+            # Resolve variable references in the value
+            value = _interpolate_variables(value, variables)
+            variables[key] = value
 
+    return variables
+
+
+def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
+    """Create PBSConfig from a dictionary of variables."""
     return PBSConfig(
-        repository=repository or "",
-        password=password,
-        fingerprint=fingerprint,
+        repository=variables.get("PBS_REPOSITORY", variables.get("REPOSITORY", "")),
+        password=variables.get("PBS_PASSWORD", variables.get("PASSWORD")),
+        fingerprint=variables.get("PBS_FINGERPRINT", variables.get("FINGERPRINT")),
     )
+
+
+def _interpolate_variables(value: str, variables: dict[str, str]) -> str:
+    """Resolve ${VAR} and $VAR references in a value."""
+
+    def replace_var(match: re.Match[str]) -> str:
+        var_name = match.group(1) or match.group(2)
+        return variables.get(var_name, match.group(0))
+
+    # Match ${VAR} or $VAR (but not $$)
+    pattern = r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)"
+    return re.sub(pattern, replace_var, value)

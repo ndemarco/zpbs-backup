@@ -34,10 +34,19 @@ export PBS_REPOSITORY="user@pbs!token@server:datastore"
 export PBS_PASSWORD="your-api-token-secret"
 export PBS_FINGERPRINT="..."
 
-# Option 2: Config file (/etc/zpbs-backup/pbs.conf)
-PBS_REPOSITORY="user@pbs!token@server:datastore"
-PBS_PASSWORD="your-api-token-secret"
-PBS_FINGERPRINT="..."
+# Option 2: Config file (checked in order)
+#   /etc/zpbs-backup/pbs.conf
+#   /root/.zpbs-backup.conf
+#   /root/proxmox-backup.conf
+#   /root/.proxmox-backup-secrets
+
+# Shell variable interpolation is supported:
+PBS_USER="backup@pbs"
+PBS_TOKEN="mytoken"
+PBS_SERVER="pbs.example.com"
+PBS_DATASTORE="backups"
+PBS_REPOSITORY="${PBS_USER}!${PBS_TOKEN}@${PBS_SERVER}:${PBS_DATASTORE}"
+PBS_PASSWORD="secret-token-value"
 ```
 
 2. Enable backup on datasets:
@@ -228,6 +237,8 @@ This maintains compatibility with existing backup IDs from the bash scripts.
 By default, namespaces are auto-derived as `{hostname}/{pool}/{dataset-path}`:
 - Dataset `tank/files/downloads` on host `storage-server`
 - Namespace: `storage-server/tank/files/downloads`
+
+The API token needs `Datastore.Modify` permission to create namespaces automatically.
 
 Override with explicit property:
 
