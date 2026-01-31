@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 
 import click
 
 from . import __version__
-from .backup import BackupOrchestrator, PruneOrchestrator
+from .backup import BackupOrchestrator, BackupResult, BackupSummary, PruneOrchestrator
 from .config import get_hostname, load_config
-from .notify import send_notification
+from .notify import format_summary_for_email, get_notification_config, send_notification
 from .pbs import PBSClient
 from .scheduler import format_last_backup, format_time_delta, is_backup_due, time_until_due
 from .zfs import (
@@ -375,6 +376,111 @@ def inherit_cmd(recursive: bool, property: str, dataset: str) -> None:
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+@main.group()
+def notify() -> None:
+    """Notification management commands."""
+    pass
+
+
+@notify.command("test")
+@click.option("--show-only", is_flag=True, help="Only show the message, don't send")
+def notify_test(show_only: bool) -> None:
+    """Send a test notification to verify configuration.
+
+    Creates a sample backup summary and sends it using the configured
+    notification method.
+    """
+    hostname = get_hostname()
+    config = get_notification_config()
+
+    # Create a sample summary
+    now = datetime.now()
+    sample_results = [
+        BackupResult(
+            dataset=Dataset(name="tank/data", properties={}),
+            success=True,
+            skipped=False,
+            duration_seconds=45.2,
+        ),
+        BackupResult(
+            dataset=Dataset(name="tank/media", properties={}),
+            success=True,
+            skipped=False,
+            duration_seconds=120.5,
+        ),
+        BackupResult(
+            dataset=Dataset(name="tank/archive", properties={}),
+            success=False,
+            skipped=False,
+            error="Connection timeout (test error)",
+            duration_seconds=30.0,
+        ),
+        BackupResult(
+            dataset=Dataset(name="tank/scratch", properties={}),
+            success=False,
+            skipped=True,
+            skip_reason="Not due yet",
+            duration_seconds=0.0,
+        ),
+    ]
+
+    sample_summary = BackupSummary(
+        start_time=now,
+        end_time=now,
+        results=sample_results,
+    )
+
+    subject, body = format_summary_for_email(sample_summary, hostname)
+
+    click.echo(f"Subject: {subject}")
+    click.echo("")
+    click.echo(body)
+
+    if show_only:
+        return
+
+    click.echo("-" * 40)
+    click.echo("Notification config:")
+    click.echo(f"  Enabled: {config.enabled}")
+    click.echo(f"  Recipient: {config.recipient or '(not set)'}")
+    click.echo(f"  External script: {config.external_script or '(not found)'}")
+    click.echo("")
+
+    if not config.enabled:
+        click.echo("Notifications are disabled (ZPBS_NOTIFY=false)")
+        return
+
+    if not config.external_script and not config.recipient:
+        click.echo("No notification method configured.")
+        click.echo("Set ZPBS_NOTIFY_EMAIL or install a script at:")
+        click.echo("  /usr/local/bin/zpbs-send-notification")
+        sys.exit(1)
+
+    click.echo("Sending test notification...")
+    success = send_notification(sample_summary, hostname, config)
+
+    if success:
+        click.echo("Test notification sent successfully.")
+    else:
+        click.echo("Failed to send notification.", err=True)
+        sys.exit(1)
+
+
+@notify.command("config")
+def notify_config() -> None:
+    """Show current notification configuration."""
+    config = get_notification_config()
+
+    click.echo("Notification configuration:")
+    click.echo(f"  Enabled:         {config.enabled}")
+    click.echo(f"  Recipient:       {config.recipient or '(not set)'}")
+    click.echo(f"  External script: {config.external_script or '(not found)'}")
+    click.echo("")
+    click.echo("Environment variables:")
+    click.echo(f"  ZPBS_NOTIFY       = {os.environ.get('ZPBS_NOTIFY', '(not set, defaults to true)')}")
+    click.echo(f"  ZPBS_NOTIFY_EMAIL = {os.environ.get('ZPBS_NOTIFY_EMAIL', '(not set)')}")
 
 
 if __name__ == "__main__":
