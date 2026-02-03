@@ -1,10 +1,11 @@
-"""Email notification support."""
+"""Email and syslog notification support."""
 
 from __future__ import annotations
 
 import os
 import shutil
 import subprocess
+import syslog
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -19,6 +20,8 @@ class NotificationConfig:
     recipient: str | None = None
     # Path to external notification script (for compatibility)
     external_script: str | None = None
+    # Syslog notification (for centralized logging)
+    syslog_enabled: bool = True
 
 
 def get_notification_config() -> NotificationConfig:
@@ -28,6 +31,7 @@ def get_notification_config() -> NotificationConfig:
     """
     enabled = os.environ.get("ZPBS_NOTIFY", "true").lower() == "true"
     recipient = os.environ.get("ZPBS_NOTIFY_EMAIL")
+    syslog_enabled = os.environ.get("ZPBS_SYSLOG", "true").lower() == "true"
 
     # Check for external notification script
     external_script = None
@@ -44,6 +48,7 @@ def get_notification_config() -> NotificationConfig:
         enabled=enabled,
         recipient=recipient,
         external_script=external_script,
+        syslog_enabled=syslog_enabled,
     )
 
 
@@ -62,13 +67,13 @@ def format_summary_for_email(summary: BackupSummary, hostname: str) -> tuple[str
 
     lines = [
         f"Backup Summary for {hostname}",
-        f"{'=' * 40}",
+        "=" * 40,
         "",
         f"Start time: {summary.start_time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"End time:   {summary.end_time.strftime('%Y-%m-%d %H:%M:%S') if summary.end_time else 'N/A'}",
         f"Duration:   {summary.duration_seconds:.1f}s",
         "",
-        f"Results:",
+        "Results:",
         f"  Successful: {summary.successful}",
         f"  Failed:     {summary.failed}",
         f"  Skipped:    {summary.skipped}",
@@ -102,6 +107,49 @@ def format_summary_for_email(summary: BackupSummary, hostname: str) -> tuple[str
     return subject, body
 
 
+def _send_to_syslog(summary: BackupSummary, hostname: str) -> bool:
+    """Send backup summary to syslog for centralized logging.
+
+    Logs a summary line plus individual dataset results.
+    Uses LOG_INFO for success, LOG_ERR for failures.
+    """
+    try:
+        syslog.openlog(ident="zpbs-backup", facility=syslog.LOG_LOCAL0)
+
+        status = "SUCCESS" if summary.failed == 0 else "FAILURE"
+        priority = syslog.LOG_INFO if summary.failed == 0 else syslog.LOG_ERR
+
+        # Summary line
+        syslog.syslog(
+            priority,
+            f"backup_complete host={hostname} status={status} "
+            f"successful={summary.successful} failed={summary.failed} "
+            f"skipped={summary.skipped} duration={summary.duration_seconds:.1f}s"
+        )
+
+        # Log failed datasets with error details
+        for result in summary.results:
+            if not result.success and not result.skipped:
+                syslog.syslog(
+                    syslog.LOG_ERR,
+                    f"backup_failed dataset={result.dataset.name} error=\"{result.error}\""
+                )
+
+        # Log successful datasets
+        for result in summary.results:
+            if result.success and not result.skipped:
+                syslog.syslog(
+                    syslog.LOG_INFO,
+                    f"backup_success dataset={result.dataset.name} "
+                    f"duration={result.duration_seconds:.1f}s"
+                )
+
+        syslog.closelog()
+        return True
+    except Exception:
+        return False
+
+
 def send_notification(
     summary: BackupSummary,
     hostname: str,
@@ -123,18 +171,22 @@ def send_notification(
     if not config.enabled:
         return True
 
+    success = True
+
+    # Always send to syslog if enabled (for centralized logging)
+    if config.syslog_enabled:
+        _send_to_syslog(summary, hostname)
+
     subject, body = format_summary_for_email(summary, hostname)
 
     # Try external script first (for compatibility with existing setups)
     if config.external_script:
-        return _send_via_external_script(config.external_script, subject, body, summary)
-
+        success = _send_via_external_script(config.external_script, subject, body, summary)
     # Fall back to sendmail/mail
-    if config.recipient:
-        return _send_via_mail(config.recipient, subject, body)
+    elif config.recipient:
+        success = _send_via_mail(config.recipient, subject, body)
 
-    # No notification method configured
-    return True
+    return success
 
 
 def _send_via_external_script(
