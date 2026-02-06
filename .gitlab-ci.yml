@@ -32,7 +32,11 @@ build-packages:
   image: python:3.11-slim
   before_script:
     - apt-get update && apt-get install -y curl
-    - curl -sfL https://raw.githubusercontent.com/goreleaser/nfpm/main/install.sh | sh -s -- -b /usr/local/bin
+    - |
+      echo "Installing nfpm..."
+      curl -fL -o /tmp/install-nfpm.sh https://raw.githubusercontent.com/goreleaser/nfpm/main/install.sh
+      sh /tmp/install-nfpm.sh -b /usr/local/bin
+      nfpm --version
     - pip install build
   script:
     - bash packaging/build-packages.sh
