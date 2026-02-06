@@ -33,9 +33,10 @@ build-packages:
   before_script:
     - apt-get update && apt-get install -y curl
     - |
-      echo "Installing nfpm..."
-      curl -fL -o /tmp/install-nfpm.sh https://raw.githubusercontent.com/goreleaser/nfpm/main/install.sh
-      sh /tmp/install-nfpm.sh -b /usr/local/bin
+      NFPM_VERSION=$(curl -s https://api.github.com/repos/goreleaser/nfpm/releases/latest | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+      echo "Installing nfpm ${NFPM_VERSION}..."
+      curl -fL -o /tmp/nfpm.tar.gz "https://github.com/goreleaser/nfpm/releases/download/${NFPM_VERSION}/nfpm_${NFPM_VERSION#v}_linux_amd64.tar.gz"
+      tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm
       nfpm --version
     - pip install build
   script:
