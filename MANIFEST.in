@@ -1,0 +1,9 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include Makefile
+recursive-include systemd *.service *.timer
+recursive-include packaging *.yaml *.sh
+recursive-include tests *.py
+global-exclude __pycache__
+global-exclude *.py[co]

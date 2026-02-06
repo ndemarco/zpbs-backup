@@ -1,5 +1,9 @@
 # zpbs-backup
 
+[![PyPI version](https://badge.fury.io/py/zpbs-backup.svg)](https://badge.fury.io/py/zpbs-backup)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ZFS property-driven Proxmox Backup Server backup tool.
 
 Automatically discovers ZFS datasets with `zpbs:backup=true` and backs them up to PBS. Configuration is stored entirely in ZFS properties - no config files for dataset selection.
@@ -16,13 +20,55 @@ Automatically discovers ZFS datasets with `zpbs:backup=true` and backs them up t
 
 ## Installation
 
-```bash
-# Install with pip
-pip install .
+### Debian / Ubuntu / Proxmox VE (.deb)
 
-# Or install in development mode
-pip install -e ".[dev]"
+Download the latest `.deb` from the [Releases](https://github.com/ndemarco/zpbs-backup/releases) page:
+
+```bash
+sudo dpkg -i zpbs-backup_0.2.0_amd64.deb
+sudo apt-get install -f  # Install any missing dependencies
 ```
+
+This installs everything: CLI, systemd timer, and config directory. The timer is enabled automatically -- configure PBS credentials at `/etc/zpbs-backup/pbs.conf`, then start the timer:
+
+```bash
+sudo systemctl start zpbs-backup.timer
+```
+
+### RHEL / Rocky / Alma (.rpm)
+
+```bash
+sudo rpm -i zpbs-backup-0.2.0.x86_64.rpm
+```
+
+Requires `python3.11` from AppStream (`dnf install python3.11`).
+
+### From PyPI
+
+```bash
+pip install zpbs-backup
+# or
+pipx install zpbs-backup
+```
+
+When installing via pip/pipx, systemd units are not installed automatically. See [Systemd Integration](#systemd-integration) below for manual setup.
+
+### From Source
+
+```bash
+git clone https://github.com/ndemarco/zpbs-backup.git
+cd zpbs-backup
+pip install .
+```
+
+### System Requirements
+
+- Python 3.11 or newer
+- ZFS utilities (`zfs`, `zpool` commands)
+- Proxmox Backup Server client (`proxmox-backup-client`)
+- Linux operating system
+
+**Note:** ZFS and PBS client cannot be installed via pip and must be installed through your system package manager. The `.deb` and `.rpm` packages list these as recommended dependencies.
 
 ## Quick Start
 
@@ -167,20 +213,20 @@ zpbs-backup inherit -r all tank/data  # Recursive, clear all
 
 ## Systemd Integration
 
-Install the systemd units for scheduled operation:
+If you installed via `.deb` or `.rpm`, systemd units are already in place. Just start the timer after configuring PBS:
 
 ```bash
-# Copy units
+sudo systemctl start zpbs-backup.timer
+systemctl list-timers zpbs-backup.timer
+```
+
+For pip/source installs, copy the units manually:
+
+```bash
 sudo cp systemd/zpbs-backup.service /etc/systemd/system/
 sudo cp systemd/zpbs-backup.timer /etc/systemd/system/
-
-# Enable and start timer
 sudo systemctl daemon-reload
-sudo systemctl enable zpbs-backup.timer
-sudo systemctl start zpbs-backup.timer
-
-# Check status
-systemctl list-timers zpbs-backup.timer
+sudo systemctl enable --now zpbs-backup.timer
 ```
 
 The timer runs daily at 2:00 AM with a random delay up to 15 minutes.

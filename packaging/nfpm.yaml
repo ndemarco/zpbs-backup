@@ -1,0 +1,57 @@
+name: zpbs-backup
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+maintainer: "Nick DeMarco <nick@demarcohome.com>"
+description: "ZFS property-driven Proxmox Backup Server backup tool"
+homepage: "https://github.com/ndemarco/zpbs-backup"
+license: MIT
+section: admin
+priority: optional
+
+contents:
+  # Embedded virtualenv
+  - src: ./build/venv/
+    dst: /opt/zpbs-backup/venv/
+    type: tree
+
+  # CLI wrapper script
+  - src: ./build/zpbs-backup-wrapper
+    dst: /usr/local/bin/zpbs-backup
+    file_info:
+      mode: 0755
+
+  # Systemd units
+  - src: ./systemd/zpbs-backup.service
+    dst: /lib/systemd/system/zpbs-backup.service
+    type: config|noreplace
+
+  - src: ./systemd/zpbs-backup.timer
+    dst: /lib/systemd/system/zpbs-backup.timer
+    type: config|noreplace
+
+  # Config directory
+  - dst: /etc/zpbs-backup/
+    type: dir
+    file_info:
+      mode: 0700
+
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh
+
+overrides:
+  deb:
+    depends:
+      - python3 (>= 3.11)
+      - python3-venv
+    recommends:
+      - proxmox-backup-client
+      - zfsutils-linux
+  rpm:
+    depends:
+      - python3.11
+    recommends:
+      - proxmox-backup-client
+      - zfs
