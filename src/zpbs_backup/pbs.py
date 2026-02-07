@@ -64,6 +64,7 @@ class PBSClient:
         args: list[str],
         check: bool = True,
         capture_output: bool = True,
+        timeout: int | None = 30,
     ) -> subprocess.CompletedProcess:
         """Run a proxmox-backup-client command."""
         cmd = ["proxmox-backup-client"] + args
@@ -73,7 +74,29 @@ class PBSClient:
             capture_output=capture_output,
             text=True,
             check=check,
+            timeout=timeout,
         )
+
+    def check_connection(self) -> None:
+        """Verify PBS server is reachable and credentials are valid.
+
+        Raises:
+            ConnectionError: If the server is unreachable or auth fails
+        """
+        try:
+            result = self._run(
+                ["list", "--output-format", "json"],
+                check=False,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            raise ConnectionError(
+                "Timed out connecting to PBS server. Check PBS_REPOSITORY and network."
+            )
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            raise ConnectionError(f"PBS connection failed: {stderr}")
 
     def list_snapshots(self, namespace: str | None = None) -> list[BackupSnapshot]:
         """List all backup snapshots.
@@ -88,7 +111,10 @@ class PBSClient:
         if namespace:
             args.extend(["--ns", namespace])
 
-        result = self._run(args, check=False)
+        try:
+            result = self._run(args, check=False)
+        except subprocess.TimeoutExpired:
+            return []
         if result.returncode != 0:
             # Namespace might not exist yet
             return []
@@ -187,7 +213,8 @@ class PBSClient:
                 stderr="",
             )
 
-        return self._run(args, check=False, capture_output=False)
+        # No timeout for backups — they can run for hours
+        return self._run(args, check=False, capture_output=False, timeout=None)
 
     def create_namespace(self, namespace: str) -> bool:
         """Create a namespace if it doesn't exist.
@@ -257,7 +284,7 @@ class PBSClient:
         if dry_run:
             args.append("--dry-run")
 
-        return self._run(args, check=False, capture_output=False)
+        return self._run(args, check=False, capture_output=False, timeout=None)
 
     def list_all_namespaces(self) -> list[str]:
         """List all namespaces in the repository.
@@ -265,7 +292,10 @@ class PBSClient:
         Returns:
             List of namespace paths
         """
-        result = self._run(["namespace", "list", "--output-format", "json"], check=False)
+        try:
+            result = self._run(["namespace", "list", "--output-format", "json"], check=False)
+        except subprocess.TimeoutExpired:
+            return []
         if result.returncode != 0:
             return []
 

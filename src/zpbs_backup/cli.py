@@ -29,6 +29,15 @@ from .zfs import (
 )
 
 
+def _check_pbs_connection(client: PBSClient) -> None:
+    """Check PBS connectivity and exit with a clear message on failure."""
+    try:
+        client.check_connection()
+    except ConnectionError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @click.group()
 @click.version_option(version=__version__)
 def main() -> None:
@@ -52,6 +61,7 @@ def status(orphans: bool, json_output: bool) -> None:
         sys.exit(1)
 
     client = PBSClient(config)
+    _check_pbs_connection(client)
     hostname = get_hostname()
 
     # Get all datasets with any zpbs property
@@ -162,6 +172,10 @@ def run(dry_run: bool, pattern: str | None, force: bool, no_notify: bool) -> Non
         sys.exit(1)
 
     hostname = get_hostname()
+
+    if not dry_run:
+        _check_pbs_connection(PBSClient(config))
+
     orchestrator = BackupOrchestrator(
         config=config,
         dry_run=dry_run,
@@ -194,6 +208,7 @@ def audit() -> None:
         sys.exit(1)
 
     client = PBSClient(config)
+    _check_pbs_connection(client)
     hostname = get_hostname()
 
     # Get enabled datasets
