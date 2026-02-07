@@ -20,6 +20,7 @@ PYTHON_DIR=$(dirname "${PYTHON}")
 
 # Copy system python into venv (symlinks break pyvenv.cfg discovery,
 # because Python resolves symlinks before searching for pyvenv.cfg)
+rm -f "${VENV_DIR}/bin/python3"
 cp "${PYTHON}" "${VENV_DIR}/bin/python3"
 ln -sf python3 "${VENV_DIR}/bin/python"
 
