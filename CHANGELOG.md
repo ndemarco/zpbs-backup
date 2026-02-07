@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-06
+
 ### Added
 - Native `.deb` and `.rpm` package builds via nfpm
 - Makefile with `make packages`, `make deb`, `make rpm` targets
 - GitLab CI/CD pipeline for building and publishing system packages
 - GitLab Releases with downloadable `.deb` and `.rpm` assets
+- GitHub Releases with `.deb` and `.rpm` assets (via GitLab CI mirror)
 - Support for both amd64 and arm64 architectures
 
 ### Changed
