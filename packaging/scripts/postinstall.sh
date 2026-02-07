@@ -28,6 +28,19 @@ ln -sf python3 "${VENV_DIR}/bin/python"
 # (it was set to the CI build host's path during package build)
 sed -i "s|^home = .*|home = ${PYTHON_DIR}|" "${VENV_DIR}/pyvenv.cfg"
 
+# Handle Python version mismatch between build and target system.
+# The venv was built with CI's Python (e.g. 3.11) but target may have 3.12+.
+# Python looks for lib/pythonX.Y/ matching its own version, so create a
+# symlink from the target version to the build version if they differ.
+SYS_PY_VER=$("${VENV_DIR}/bin/python3" -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')")
+BUILD_PY_DIR=$(ls -d "${VENV_DIR}/lib/python"* 2>/dev/null | head -1)
+if [ -n "${BUILD_PY_DIR}" ]; then
+    BUILD_PY_VER=$(basename "${BUILD_PY_DIR}")
+    if [ "${SYS_PY_VER}" != "${BUILD_PY_VER}" ]; then
+        ln -sfn "${BUILD_PY_VER}" "${VENV_DIR}/lib/${SYS_PY_VER}"
+    fi
+fi
+
 # Systemd integration
 if command -v systemctl &>/dev/null; then
     systemctl daemon-reload
