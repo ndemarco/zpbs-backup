@@ -88,7 +88,7 @@ publish-packages:
       for f in dist/*.deb dist/*.rpm; do
         [ -f "$f" ] || continue
         echo "Uploading $(basename "$f")..."
-        curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        curl -k --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
              --upload-file "$f" \
              "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/zpbs-backup/${CI_COMMIT_TAG}/$(basename "$f")"
       done
