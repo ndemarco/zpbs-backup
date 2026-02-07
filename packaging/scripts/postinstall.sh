@@ -14,9 +14,18 @@ else
     exit 1
 fi
 
-# Create/update the python symlinks in the venv
-ln -sf "${PYTHON}" "${VENV_DIR}/bin/python3"
-ln -sf "${PYTHON}" "${VENV_DIR}/bin/python"
+# Resolve to real path (in case python3 is itself a symlink)
+PYTHON=$(readlink -f "${PYTHON}")
+PYTHON_DIR=$(dirname "${PYTHON}")
+
+# Copy system python into venv (symlinks break pyvenv.cfg discovery,
+# because Python resolves symlinks before searching for pyvenv.cfg)
+cp "${PYTHON}" "${VENV_DIR}/bin/python3"
+ln -sf python3 "${VENV_DIR}/bin/python"
+
+# Update pyvenv.cfg to reference the target system's python location
+# (it was set to the CI build host's path during package build)
+sed -i "s|^home = .*|home = ${PYTHON_DIR}|" "${VENV_DIR}/pyvenv.cfg"
 
 # Systemd integration
 if command -v systemctl &>/dev/null; then
