@@ -69,16 +69,21 @@ def load_config() -> PBSConfig:
 
     merged_vars: dict[str, str] = {}
     for config_path in config_paths:
-        if config_path.exists():
-            file_vars = _parse_config_variables(config_path, merged_vars)
-            merged_vars.update(file_vars)
+        try:
+            if config_path.exists():
+                file_vars = _parse_config_variables(config_path, merged_vars)
+                merged_vars.update(file_vars)
+        except PermissionError:
+            continue
 
     config = _config_from_variables(merged_vars)
     if config.repository:
         return config
 
     raise ValueError(
-        "PBS_REPOSITORY not configured. Set environment variable or create config file."
+        "PBS_REPOSITORY not configured. Set environment variable or create "
+        "config file.\nHint: config files under /etc/zpbs-backup/ require "
+        "root access — try running with sudo."
     )
 
 

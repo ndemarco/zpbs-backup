@@ -271,8 +271,18 @@ class PBSClient:
 
         try:
             data = json.loads(result.stdout)
-            # The output is a list of objects with 'ns' key
-            return [item.get("ns", "") for item in data if item.get("ns")]
+            # PBS may return [{"ns": "path"}, ...] or ["path", ...]
+            namespaces = []
+            for item in data:
+                if isinstance(item, dict):
+                    ns = item.get("ns", "")
+                elif isinstance(item, str):
+                    ns = item
+                else:
+                    continue
+                if ns:
+                    namespaces.append(ns)
+            return namespaces
         except json.JSONDecodeError:
             return []
 
