@@ -74,6 +74,12 @@ pip install .
 
 1. Create a PBS API token with **DatastoreAdmin** permission, then configure the connection:
 
+> **Important: PBS privilege separation.** By default, a token's effective permissions
+> are the *intersection* of the user's and the token's permissions. You must grant
+> permissions on the datastore to **both** the user (e.g. `backup@pbs`) **and** the
+> token (e.g. `backup@pbs!mytoken`). In the PBS web UI: Configuration > Access Control >
+> Permissions > Add — grant **DatastoreAdmin** on `/datastore/yourstore` to both.
+
 ```bash
 # Option 1: Environment variables (individual parts — recommended)
 export PBS_USER="backup@pbs"
@@ -114,16 +120,16 @@ zpbs-backup show-config
 
 ```bash
 # Enable backup for a dataset
-zpbs-backup set zpbs:backup=true tank/important-data
+zpbs-backup set backup=true tank/important-data
 
 # Set schedule (optional, default is daily)
-zpbs-backup set zpbs:schedule=weekly tank/less-important
+zpbs-backup set schedule=weekly tank/less-important
 
 # Set retention policy (optional)
-zpbs-backup set zpbs:retention=7d,4w,6m,1y tank/important-data
+zpbs-backup set retention=7d,4w,6m,1y tank/important-data
 
 # Set priority (optional, lower = first, default 50)
-zpbs-backup set zpbs:priority=10 tank/critical-data
+zpbs-backup set priority=10 tank/critical-data
 ```
 
 3. Run backups:
@@ -151,14 +157,14 @@ zpbs-backup run --force
 
 ### Inheritance
 
-Properties are inherited through the ZFS dataset hierarchy. Set `zpbs:backup=true` on a parent dataset to enable backup for all children, then selectively disable with `zpbs:backup=false`.
+Properties are inherited through the ZFS dataset hierarchy. Set `backup=true` on a parent dataset to enable backup for all children, then selectively disable with `backup=false`.
 
 ```bash
 # Enable backup for entire pool
-zpbs-backup set zpbs:backup=true tank
+zpbs-backup set backup=true tank
 
 # Disable for specific dataset
-zpbs-backup set zpbs:backup=false tank/scratch
+zpbs-backup set backup=false tank/scratch
 
 # Check inheritance
 zpbs-backup get all tank/data
@@ -207,7 +213,7 @@ zpbs-backup audit
 ```
 
 Reports:
-- Datasets with `zpbs:backup=true` that have never been backed up
+- Datasets with `backup=true` that have never been backed up
 - Backup groups in PBS with no matching ZFS dataset (orphans)
 
 ### Prune
@@ -224,15 +230,15 @@ zpbs-backup prune --dataset 'tank/*'
 
 ```bash
 # Get properties
-zpbs-backup get zpbs:backup tank/data
+zpbs-backup get backup tank/data
 zpbs-backup get all tank/data
 
 # Set properties
-zpbs-backup set zpbs:backup=true tank/data
-zpbs-backup set schedule=weekly tank/data   # zpbs: prefix optional
+zpbs-backup set backup=true tank/data
+zpbs-backup set schedule=weekly tank/data
 
 # Clear properties (inherit from parent)
-zpbs-backup inherit zpbs:schedule tank/data
+zpbs-backup inherit schedule tank/data
 zpbs-backup inherit -r all tank/data  # Recursive, clear all
 ```
 
@@ -272,8 +278,8 @@ If you're migrating from the bash-based `pbs-backup-all` scripts:
 
 ```bash
 # For each dataset in DATASETS_FAST/DATASETS_BULK
-zpbs-backup set zpbs:backup=true tank/files
-zpbs-backup set zpbs:priority=10 tank/files  # Lower for "fast" datasets
+zpbs-backup set backup=true tank/files
+zpbs-backup set priority=10 tank/files  # Lower for "fast" datasets
 ```
 
 3. Verify discovery matches:
@@ -321,7 +327,7 @@ The API token needs `DatastoreAdmin` permission to create namespaces automatical
 Override with explicit property:
 
 ```bash
-zpbs-backup set zpbs:namespace=production/data tank/files
+zpbs-backup set namespace=production/data tank/files
 ```
 
 ## Notifications

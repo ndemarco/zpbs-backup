@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime
 
@@ -99,7 +100,7 @@ def status(orphans: bool, json_output: bool) -> None:
         click.echo("No datasets with zpbs properties found.")
         click.echo("")
         click.echo("To enable backup for a dataset:")
-        click.echo("  zpbs-backup set zpbs:backup=true <dataset>")
+        click.echo("  zpbs-backup set backup=true <dataset>")
         return
 
     # Find column widths
@@ -394,8 +395,12 @@ def prune(dry_run: bool, pattern: str | None) -> None:
 def get_property_cmd(property: str, dataset: str) -> None:
     """Get a zpbs property value for a dataset.
 
-    PROPERTY can be a specific property (e.g., zpbs:backup) or 'all' to show
-    all zpbs properties.
+    PROPERTY can be a property name (e.g., backup, schedule) or 'all'.
+
+    \b
+    Examples:
+        zpbs-backup get backup tank/data
+        zpbs-backup get all tank/data
     """
     try:
         ds = get_dataset(dataset)
@@ -405,14 +410,15 @@ def get_property_cmd(property: str, dataset: str) -> None:
 
     if property == "all":
         # Show all properties
-        click.echo(f"{'PROPERTY':<20}  {'VALUE':<15}  SOURCE")
-        click.echo("-" * 60)
+        click.echo(f"{'PROPERTY':<12}  {'VALUE':<15}  SOURCE")
+        click.echo("-" * 50)
         for prop_name in ALL_PROPERTIES:
+            short_name = prop_name.removeprefix("zpbs:")
             prop = ds.properties.get(prop_name)
             if prop:
-                click.echo(f"{prop_name:<20}  {prop.value:<15}  {prop.source}")
+                click.echo(f"{short_name:<12}  {prop.value:<15}  {prop.source}")
             else:
-                click.echo(f"{prop_name:<20}  -")
+                click.echo(f"{short_name:<12}  -")
     else:
         # Normalize property name
         if not property.startswith("zpbs:"):
@@ -433,10 +439,11 @@ def get_property_cmd(property: str, dataset: str) -> None:
 def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: bool) -> None:
     """Set a zpbs property on a dataset.
 
-    PROPERTY_VALUE should be in the form property=value, e.g., zpbs:backup=true.
+    PROPERTY_VALUE should be in the form property=value.
 
+    \b
     Examples:
-        zpbs-backup set zpbs:backup=true tank/data
+        zpbs-backup set backup=true tank/data
         zpbs-backup set schedule=daily tank/data
         zpbs-backup set backup=false --clear tank/data
     """
@@ -449,6 +456,7 @@ def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: 
     # Normalize property name
     if not property_name.startswith("zpbs:"):
         property_name = f"zpbs:{property_name}"
+    short_name = property_name.removeprefix("zpbs:")
 
     # Validate
     valid, error = validate_property_value(property_name, value)
@@ -460,10 +468,21 @@ def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: 
         # If clearing all properties when disabling backup
         if clear and property_name == PROP_BACKUP and value == "false":
             inherit_all_properties(dataset, recursive=recursive)
-            click.echo(f"Cleared all zpbs properties on {dataset}")
+            click.echo(f"Cleared all properties on {dataset}")
         else:
             set_property(dataset, property_name, value)
-            click.echo(f"Set {property_name}={value} on {dataset}")
+            click.echo(f"Set {short_name}={value} on {dataset}")
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else ""
+        if "permission denied" in stderr.lower() or e.returncode == 255:
+            click.echo(
+                f"Error: Permission denied. Setting ZFS properties requires root.\n"
+                f"  Try: sudo zpbs-backup set {short_name}={value} {dataset}",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: Failed to set {short_name}={value} on {dataset}: {stderr}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -476,24 +495,36 @@ def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: 
 def inherit_cmd(recursive: bool, property: str, dataset: str) -> None:
     """Clear a zpbs property (inherit from parent).
 
-    PROPERTY can be a specific property (e.g., zpbs:backup) or 'all' to clear
-    all zpbs properties.
+    PROPERTY can be a property name (e.g., schedule) or 'all'.
 
+    \b
     Examples:
-        zpbs-backup inherit zpbs:schedule tank/data
+        zpbs-backup inherit schedule tank/data
         zpbs-backup inherit -r all tank/data
     """
     try:
         if property == "all":
             inherit_all_properties(dataset, recursive=recursive)
-            click.echo(f"Cleared all zpbs properties on {dataset}")
+            click.echo(f"Cleared all properties on {dataset}")
         else:
             # Normalize property name
             if not property.startswith("zpbs:"):
                 property = f"zpbs:{property}"
+            short_name = property.removeprefix("zpbs:")
 
             inherit_property(dataset, property, recursive=recursive)
-            click.echo(f"Cleared {property} on {dataset}")
+            click.echo(f"Cleared {short_name} on {dataset}")
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else ""
+        if "permission denied" in stderr.lower() or e.returncode == 255:
+            click.echo(
+                f"Error: Permission denied. Modifying ZFS properties requires root.\n"
+                f"  Try: sudo zpbs-backup inherit {property.removeprefix('zpbs:')} {dataset}",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: {stderr or e}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

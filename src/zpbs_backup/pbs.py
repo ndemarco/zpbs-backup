@@ -100,7 +100,20 @@ class PBSClient:
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
-            raise ConnectionError(f"PBS connection failed: {stderr}")
+            msg = f"PBS connection failed: {stderr}"
+            if "permission check failed" in stderr.lower():
+                msg += (
+                    "\n\n"
+                    "Hint: PBS API tokens use privilege separation by default.\n"
+                    "The token's effective permissions are the INTERSECTION of\n"
+                    "the user's and the token's permissions. Both the user AND\n"
+                    "the token need permissions on the datastore.\n"
+                    "\n"
+                    "Fix: in the PBS web UI, go to Configuration > Access Control >\n"
+                    "Permissions > Add, and grant the user (e.g. zpbs-test@pbs)\n"
+                    "at least DatastoreAudit on the datastore path (e.g. /datastore/mystore)."
+                )
+            raise ConnectionError(msg)
 
     def list_snapshots(self, namespace: str | None = None) -> list[BackupSnapshot]:
         """List all backup snapshots.

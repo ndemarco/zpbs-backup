@@ -306,22 +306,24 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
+    short = prop.removeprefix("zpbs:")
+
     if prop == PROP_BACKUP:
         if value not in ("true", "false"):
-            return False, f"zpbs:backup must be 'true' or 'false', got '{value}'"
+            return False, f"{short} must be 'true' or 'false', got '{value}'"
 
     elif prop == PROP_SCHEDULE:
         valid_schedules = [s.value for s in Schedule]
         if value not in valid_schedules:
-            return False, f"zpbs:schedule must be one of {valid_schedules}, got '{value}'"
+            return False, f"{short} must be one of {valid_schedules}, got '{value}'"
 
     elif prop == PROP_PRIORITY:
         try:
             priority = int(value)
             if not 1 <= priority <= 100:
-                return False, f"zpbs:priority must be between 1 and 100, got {priority}"
+                return False, f"{short} must be between 1 and 100, got {priority}"
         except ValueError:
-            return False, f"zpbs:priority must be an integer, got '{value}'"
+            return False, f"{short} must be an integer, got '{value}'"
 
     elif prop == PROP_RETENTION:
         # Basic validation - check format like "7d,4w,6m,1y"
@@ -335,18 +337,18 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
     elif prop == PROP_NAMESPACE:
         # Namespace can be any string, but shouldn't contain invalid characters
         if not value:
-            return False, "zpbs:namespace cannot be empty"
+            return False, f"{short} cannot be empty"
         # PBS namespace rules: alphanumeric, dash, underscore, slash
         import re
 
         if not re.match(r"^[a-zA-Z0-9/_-]+$", value):
             return (
                 False,
-                "zpbs:namespace can only contain alphanumeric characters, "
+                f"{short} can only contain alphanumeric characters, "
                 "dashes, underscores, and slashes",
             )
 
     elif not prop.startswith("zpbs:"):
-        return False, f"Unknown property '{prop}'. Must start with 'zpbs:'"
+        return False, f"Unknown property '{prop}'"
 
     return True, ""
