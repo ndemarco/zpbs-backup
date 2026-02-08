@@ -89,6 +89,10 @@ class PBSClient:
                 check=False,
                 timeout=10,
             )
+        except FileNotFoundError:
+            raise ConnectionError(
+                "proxmox-backup-client not found. Install the Proxmox Backup client package."
+            )
         except subprocess.TimeoutExpired:
             raise ConnectionError(
                 "Timed out connecting to PBS server. Check PBS_REPOSITORY and network."
