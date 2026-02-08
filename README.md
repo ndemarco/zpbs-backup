@@ -25,7 +25,7 @@ Automatically discovers ZFS datasets with `zpbs:backup=true` and backs them up t
 Download the latest `.deb` from the [Releases](https://github.com/ndemarco/zpbs-backup/releases) page:
 
 ```bash
-sudo dpkg -i zpbs-backup_0.2.0_amd64.deb
+sudo dpkg -i zpbs-backup_<version>_amd64.deb
 sudo apt-get install -f  # Install any missing dependencies
 ```
 
@@ -38,7 +38,7 @@ sudo systemctl start zpbs-backup.timer
 ### RHEL / Rocky / Alma (.rpm)
 
 ```bash
-sudo rpm -i zpbs-backup-0.2.0.x86_64.rpm
+sudo rpm -i zpbs-backup-<version>.x86_64.rpm
 ```
 
 Requires `python3.11` from AppStream (`dnf install python3.11`).
@@ -72,27 +72,42 @@ pip install .
 
 ## Quick Start
 
-1. Configure PBS connection:
+1. Create a PBS API token with **DatastoreAdmin** permission, then configure the connection:
 
 ```bash
-# Option 1: Environment variables
-export PBS_REPOSITORY="user@pbs!token@server:datastore"
-export PBS_PASSWORD="your-api-token-secret"
-export PBS_FINGERPRINT="..."
+# Option 1: Environment variables (individual parts — recommended)
+export PBS_USER="backup@pbs"
+export PBS_API_TOKEN_NAME="mytoken"
+export PBS_SERVER="pbs.example.com"
+export PBS_DATASTORE="backups"
+export PBS_API_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+export PBS_FINGERPRINT="AA:BB:CC:..."
 
-# Option 2: Config file (checked in order)
-#   /etc/zpbs-backup/pbs.conf
-#   /root/.zpbs-backup.conf
-#   /root/proxmox-backup.conf
-#   /root/.proxmox-backup-secrets
+# Option 2: Config file
+# Config files are checked in priority order:
+#   1. ~/.config/zpbs-backup/pbs.conf  (per-user)
+#   2. /etc/zpbs-backup/pbs.conf       (system-wide)
+```
 
-# Shell variable interpolation is supported:
+Example `/etc/zpbs-backup/pbs.conf`:
+
+```bash
+# PBS API token configuration
 PBS_USER="backup@pbs"
-PBS_TOKEN="mytoken"
+PBS_API_TOKEN_NAME="mytoken"
 PBS_SERVER="pbs.example.com"
 PBS_DATASTORE="backups"
-PBS_REPOSITORY="${PBS_USER}!${PBS_TOKEN}@${PBS_SERVER}:${PBS_DATASTORE}"
-PBS_PASSWORD="secret-token-value"
+PBS_API_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+PBS_FINGERPRINT="AA:BB:CC:..."
+
+# Shell variable interpolation is supported:
+# PBS_REPOSITORY="${PBS_USER}!${PBS_API_TOKEN_NAME}@${PBS_SERVER}:${PBS_DATASTORE}"
+```
+
+Verify your configuration:
+
+```bash
+zpbs-backup show-config
 ```
 
 2. Enable backup on datasets:
@@ -150,6 +165,16 @@ zpbs-backup get all tank/data
 ```
 
 ## CLI Commands
+
+### Show Config
+
+Display PBS connection configuration, source, and verify connectivity:
+
+```bash
+zpbs-backup show-config              # Show active config + connection check
+zpbs-backup show-config --verbose    # Show all config sources in priority order
+zpbs-backup show-config --json       # Machine-parseable JSON (for automation)
+```
 
 ### Status
 
@@ -209,6 +234,13 @@ zpbs-backup set schedule=weekly tank/data   # zpbs: prefix optional
 # Clear properties (inherit from parent)
 zpbs-backup inherit zpbs:schedule tank/data
 zpbs-backup inherit -r all tank/data  # Recursive, clear all
+```
+
+### Test Notifications
+
+```bash
+zpbs-backup send-test-notification              # Send a test notification
+zpbs-backup send-test-notification --show-only  # Preview without sending
 ```
 
 ## Systemd Integration
@@ -284,7 +316,7 @@ By default, namespaces are auto-derived as `{hostname}/{pool}/{dataset-path}`:
 - Dataset `tank/files/downloads` on host `storage-server`
 - Namespace: `storage-server/tank/files/downloads`
 
-The API token needs `Datastore.Modify` permission to create namespaces automatically.
+The API token needs `DatastoreAdmin` permission to create namespaces automatically.
 
 Override with explicit property:
 
@@ -299,11 +331,12 @@ Email notifications are sent on backup completion. Configure via:
 - Environment: `ZPBS_NOTIFY_EMAIL=admin@example.com`
 - External script: `/usr/local/bin/pbs-send-notification` (for compatibility)
 
-Disable notifications:
+Test and manage notifications:
 
 ```bash
-zpbs-backup run --no-notify
-export ZPBS_NOTIFY=false
+zpbs-backup send-test-notification   # Verify notification delivery
+zpbs-backup run --no-notify          # Skip notification for this run
+export ZPBS_NOTIFY=false             # Disable notifications globally
 ```
 
 ## Development

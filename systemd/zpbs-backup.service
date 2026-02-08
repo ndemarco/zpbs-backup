@@ -9,7 +9,6 @@ Type=oneshot
 ExecStart=/usr/local/bin/zpbs-backup run
 # Load PBS credentials from file if not in environment
 EnvironmentFile=-/etc/zpbs-backup/pbs.conf
-EnvironmentFile=-/root/.zpbs-backup.conf
 # Prevent multiple simultaneous runs
 ExecStartPre=/bin/sh -c '! pgrep -f "zpbs-backup run"'
 

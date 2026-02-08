@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-08
+
+### Added
+- `show-config` command: display active PBS configuration, source, and connectivity check
+  - `--verbose` flag shows all config sources in priority order
+  - `--json` flag for machine-parseable output (suitable for automation)
+- `send-test-notification` command (replaces `notify test`)
+- New config variables aligned with PBS API token terminology:
+  - `PBS_API_TOKEN_SECRET` (preferred over `PBS_PASSWORD`)
+  - `PBS_USER`, `PBS_API_TOKEN_NAME`, `PBS_SERVER`, `PBS_DATASTORE` (individual parts)
+- Auto-composition of `PBS_REPOSITORY` from individual parts when not set explicitly
+- Config source tracking: shows which file or env var provided each setting
+- Per-user config file: `~/.config/zpbs-backup/pbs.conf`
+- 40 new tests for config module
+
+### Changed
+- Config file search simplified to 2 locations: `~/.config/zpbs-backup/pbs.conf` and `/etc/zpbs-backup/pbs.conf`
+- Removed legacy `/root` config file paths
+- `notify test` and `notify config` are now hidden deprecated aliases
+
+### Deprecated
+- `notify test` — use `send-test-notification` instead
+- `notify config` — use `show-config` instead
+
 ## [0.3.2] - 2026-02-06
 
 ### Added

@@ -11,7 +11,13 @@ import click
 
 from . import __version__
 from .backup import BackupOrchestrator, BackupResult, BackupSummary, PruneOrchestrator
-from .config import get_hostname, load_config
+from .config import (
+    PBSConfig,
+    get_all_config_sources,
+    get_hostname,
+    load_config,
+    mask_secret,
+)
 from .notify import format_summary_for_email, get_notification_config, send_notification
 from .pbs import PBSClient
 from .scheduler import format_last_backup, format_time_delta, is_backup_due, time_until_due
@@ -260,6 +266,106 @@ def audit() -> None:
         click.echo("No orphaned backup groups found.")
 
 
+@main.command("show-config")
+@click.option("--verbose", "-v", is_flag=True, help="Show all config sources in priority order")
+@click.option("--json", "json_output", is_flag=True, help="Machine-parseable JSON output")
+def show_config(verbose: bool, json_output: bool) -> None:
+    """Show PBS connection configuration and verify connectivity.
+
+    Displays the active configuration source, parsed connection details,
+    and tests connectivity to the PBS server.
+
+    Use --verbose to see all config sources in priority order.
+    Use --json for machine-parseable output (suitable for automation).
+    """
+    try:
+        config = load_config()
+    except ValueError as e:
+        if json_output:
+            click.echo(json.dumps({"error": str(e), "connected": False}, indent=2))
+        else:
+            click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    if json_output:
+        _show_config_json(config)
+        return
+
+    # Normal / verbose output
+    click.echo("PBS connection:")
+    click.echo(f"  Source:           {config.active_source}")
+    click.echo(f"  Server:           {config.server or '(unknown)'}")
+    click.echo(f"  User:             {config.user or '(unknown)'}")
+    click.echo(f"  API token name:   {config.token_name or '(unknown)'}")
+    click.echo(f"  Datastore:        {config.datastore or '(unknown)'}")
+    click.echo(f"  Token secret:     {mask_secret(config.password)}")
+    click.echo(f"  Fingerprint:      {config.fingerprint or '(not set)'}")
+
+    if verbose:
+        click.echo("")
+        _show_config_sources_verbose()
+
+    click.echo("")
+    click.echo(f"Effective PBS_REPOSITORY: {config.repository}")
+    click.echo("")
+
+    # Connection check
+    click.echo("Checking connection... ", nl=False)
+    client = PBSClient(config)
+    try:
+        client.check_connection()
+        click.echo("OK")
+    except ConnectionError as e:
+        click.echo("FAILED")
+        click.echo(f"  {e}", err=True)
+        sys.exit(1)
+
+
+def _show_config_json(config: PBSConfig) -> None:
+    """Output config as JSON (no secrets)."""
+    from .pbs import PBSClient
+
+    connected = False
+    error = None
+    client = PBSClient(config)
+    try:
+        client.check_connection()
+        connected = True
+    except ConnectionError as e:
+        error = str(e)
+
+    data = {
+        "server": config.server,
+        "user": config.user,
+        "api_token_name": config.token_name,
+        "datastore": config.datastore,
+        "fingerprint": config.fingerprint,
+        "repository": config.repository,
+        "active_source": config.active_source,
+        "connected": connected,
+    }
+    if error:
+        data["error"] = error
+    click.echo(json.dumps(data, indent=2))
+    if not connected:
+        sys.exit(1)
+
+
+def _show_config_sources_verbose() -> None:
+    """Show all config sources in priority order."""
+    sources = get_all_config_sources()
+
+    click.echo("Configuration sources (highest priority first):")
+    for i, source in enumerate(sources, 1):
+        marker = "  [active]" if source.status == "active" else ""
+        click.echo(f"  {i}. {source.name}: {source.status}{marker}")
+        if source.variables:
+            for key, value in source.variables.items():
+                if "SECRET" in key or "PASSWORD" in key:
+                    value = mask_secret(value)
+                click.echo(f"     {key}={value}")
+
+
 @main.command()
 @click.option("--dry-run", is_flag=True, help="Show what would be pruned without doing it")
 @click.option("--dataset", "pattern", help="Only prune datasets matching pattern")
@@ -393,20 +499,19 @@ def inherit_cmd(recursive: bool, property: str, dataset: str) -> None:
         sys.exit(1)
 
 
-@main.group()
-def notify() -> None:
-    """Notification management commands."""
-    pass
-
-
-@notify.command("test")
+@main.command("send-test-notification")
 @click.option("--show-only", is_flag=True, help="Only show the message, don't send")
-def notify_test(show_only: bool) -> None:
+def send_test_notification(show_only: bool) -> None:
     """Send a test notification to verify configuration.
 
     Creates a sample backup summary and sends it using the configured
     notification method.
     """
+    _do_send_test_notification(show_only)
+
+
+def _do_send_test_notification(show_only: bool) -> None:
+    """Shared implementation for send-test-notification."""
     hostname = get_hostname()
     config = get_notification_config()
 
@@ -483,9 +588,28 @@ def notify_test(show_only: bool) -> None:
         sys.exit(1)
 
 
+# --- Deprecated 'notify' group (hidden, prints deprecation warning) ---
+
+@main.group(hidden=True)
+def notify() -> None:
+    """Notification management commands (deprecated)."""
+    click.echo(
+        "Warning: 'zpbs-backup notify' is deprecated. "
+        "Use 'zpbs-backup send-test-notification' or 'zpbs-backup show-config' instead.",
+        err=True,
+    )
+
+
+@notify.command("test")
+@click.option("--show-only", is_flag=True, help="Only show the message, don't send")
+def notify_test(show_only: bool) -> None:
+    """Send a test notification (deprecated: use send-test-notification)."""
+    _do_send_test_notification(show_only)
+
+
 @notify.command("config")
 def notify_config() -> None:
-    """Show current notification configuration."""
+    """Show notification configuration (deprecated: use show-config)."""
     config = get_notification_config()
 
     click.echo("Notification configuration:")
