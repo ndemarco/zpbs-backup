@@ -149,19 +149,19 @@ publish-github:
     - apk add --no-cache curl jq
   script:
     - VERSION="${CI_COMMIT_TAG#v}"
-    # Wait for the mirror to push the tag to GitHub (up to 2 minutes)
+    # Wait for the mirror to push the tag to GitHub (up to 5 minutes)
     - |
       echo "Waiting for tag ${CI_COMMIT_TAG} to appear on GitHub..."
-      for i in $(seq 1 12); do
+      for i in $(seq 1 30); do
         STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
           -H "Authorization: token ${GITHUB_TOKEN}" \
           "https://api.github.com/repos/${GITHUB_REPO}/git/refs/tags/${CI_COMMIT_TAG}")
         [ "$STATUS" = "200" ] && break
-        echo "  Attempt $i/12 - tag not yet mirrored (HTTP $STATUS), waiting 10s..."
+        echo "  Attempt $i/30 - tag not yet mirrored (HTTP $STATUS), waiting 10s..."
         sleep 10
       done
       if [ "$STATUS" != "200" ]; then
-        echo "ERROR: Tag ${CI_COMMIT_TAG} not found on GitHub after 2 minutes"
+        echo "ERROR: Tag ${CI_COMMIT_TAG} not found on GitHub after 5 minutes"
         exit 1
       fi
     # Create GitHub release
