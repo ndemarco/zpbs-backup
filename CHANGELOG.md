@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-08
+
+### Changed
+- `get` command: argument order changed to `get DATASET [PROPERTY]` — property defaults to showing all
+- CLI hides `zpbs:` prefix from all user-facing output (use short names: backup, schedule, etc.)
+- Permission denied errors now suggest using sudo
+- Helpful hint on PBS privilege separation when connection check fails
+
 ## [0.4.0] - 2026-02-08
 
 ### Added
@@ -21,7 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config source tracking: shows which file or env var provided each setting
 - Per-user config file: `~/.config/zpbs-backup/pbs.conf`
 - 40 new tests for config module
-- Helpful hint on permission errors explaining PBS privilege separation
 
 ### Changed
 - Config file search simplified to 2 locations: `~/.config/zpbs-backup/pbs.conf` and `/etc/zpbs-backup/pbs.conf`

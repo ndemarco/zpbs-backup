@@ -390,17 +390,18 @@ def prune(dry_run: bool, pattern: str | None) -> None:
 
 
 @main.command("get")
-@click.argument("property")
 @click.argument("dataset")
-def get_property_cmd(property: str, dataset: str) -> None:
-    """Get a zpbs property value for a dataset.
+@click.argument("property", default="all")
+def get_property_cmd(dataset: str, property: str) -> None:
+    """Get zpbs properties for a dataset.
 
-    PROPERTY can be a property name (e.g., backup, schedule) or 'all'.
+    Shows all properties by default, or a specific one.
 
     \b
     Examples:
-        zpbs-backup get backup tank/data
-        zpbs-backup get all tank/data
+        zpbs-backup get tank/data
+        zpbs-backup get tank/data backup
+        zpbs-backup get tank/data schedule
     """
     try:
         ds = get_dataset(dataset)

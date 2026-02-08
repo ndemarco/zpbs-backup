@@ -167,7 +167,7 @@ zpbs-backup set backup=true tank
 zpbs-backup set backup=false tank/scratch
 
 # Check inheritance
-zpbs-backup get all tank/data
+zpbs-backup get tank/data
 ```
 
 ## CLI Commands
@@ -230,8 +230,8 @@ zpbs-backup prune --dataset 'tank/*'
 
 ```bash
 # Get properties
-zpbs-backup get backup tank/data
-zpbs-backup get all tank/data
+zpbs-backup get tank/data
+zpbs-backup get tank/data backup
 
 # Set properties
 zpbs-backup set backup=true tank/data
