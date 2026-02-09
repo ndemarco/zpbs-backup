@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-02-09
+
+### Fixed
+- Use actual ZFS mountpoint instead of assuming `/{dataset_name}` — fixes backup failures for datasets whose mountpoint differs from their name
+- Skip datasets with `mountpoint=none` or `mountpoint=legacy` instead of failing
+
 ## [0.4.1] - 2026-02-08
 
 ### Changed

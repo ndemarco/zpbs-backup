@@ -64,6 +64,7 @@ class Dataset:
 
     name: str
     properties: dict[str, PropertyValue] = field(default_factory=dict)
+    mountpoint: str | None = None  # None if mountpoint=none/legacy/-
 
     @property
     def backup_enabled(self) -> bool:
@@ -144,22 +145,14 @@ def run_zfs_command(args: list[str], check: bool = True) -> subprocess.Completed
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
-def discover_datasets() -> list[Dataset]:
-    """Discover all datasets with zpbs:backup=true (including inherited).
+def _parse_dataset_output(stdout: str) -> dict[str, Dataset]:
+    """Parse zfs get output into a dict of datasets.
 
-    Returns:
-        List of Dataset objects with backup enabled, sorted by priority.
+    Handles both zpbs: properties and the standard mountpoint property.
     """
-    # Get all zpbs properties for all filesystems
-    props = ",".join(ALL_PROPERTIES)
-    result = run_zfs_command(
-        ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
-    )
-
-    # Parse output into datasets
     datasets: dict[str, Dataset] = {}
 
-    for line in result.stdout.strip().split("\n"):
+    for line in stdout.strip().split("\n"):
         if not line:
             continue
 
@@ -172,7 +165,29 @@ def discover_datasets() -> list[Dataset]:
         if name not in datasets:
             datasets[name] = Dataset(name=name)
 
-        datasets[name].properties[prop] = PropertyValue(value=value, source=source)
+        if prop == "mountpoint":
+            # none, legacy, and - mean no usable mountpoint
+            if value not in ("none", "legacy", "-"):
+                datasets[name].mountpoint = value
+        else:
+            datasets[name].properties[prop] = PropertyValue(value=value, source=source)
+
+    return datasets
+
+
+def discover_datasets() -> list[Dataset]:
+    """Discover all datasets with zpbs:backup=true (including inherited).
+
+    Returns:
+        List of Dataset objects with backup enabled, sorted by priority.
+    """
+    # Get all zpbs properties plus mountpoint for all filesystems
+    props = ",".join(ALL_PROPERTIES) + ",mountpoint"
+    result = run_zfs_command(
+        ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
+    )
+
+    datasets = _parse_dataset_output(result.stdout)
 
     # Filter to datasets with backup enabled and sort by priority
     enabled = [ds for ds in datasets.values() if ds.backup_enabled]
@@ -187,27 +202,12 @@ def get_all_datasets() -> list[Dataset]:
     Returns:
         List of all Dataset objects that have any zpbs property set.
     """
-    props = ",".join(ALL_PROPERTIES)
+    props = ",".join(ALL_PROPERTIES) + ",mountpoint"
     result = run_zfs_command(
         ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
     )
 
-    datasets: dict[str, Dataset] = {}
-
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-
-        parts = line.split("\t")
-        if len(parts) != 4:
-            continue
-
-        name, prop, value, source = parts
-
-        if name not in datasets:
-            datasets[name] = Dataset(name=name)
-
-        datasets[name].properties[prop] = PropertyValue(value=value, source=source)
+    datasets = _parse_dataset_output(result.stdout)
 
     # Return all datasets that have at least one property set
     return [
@@ -229,25 +229,13 @@ def get_dataset(name: str) -> Dataset:
     Raises:
         subprocess.CalledProcessError: If the dataset doesn't exist
     """
-    props = ",".join(ALL_PROPERTIES)
+    props = ",".join(ALL_PROPERTIES) + ",mountpoint"
     result = run_zfs_command(
         ["get", "-H", "-o", "name,property,value,source", props, name]
     )
 
-    dataset = Dataset(name=name)
-
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-
-        parts = line.split("\t")
-        if len(parts) != 4:
-            continue
-
-        _, prop, value, source = parts
-        dataset.properties[prop] = PropertyValue(value=value, source=source)
-
-    return dataset
+    datasets = _parse_dataset_output(result.stdout)
+    return datasets.get(name, Dataset(name=name))
 
 
 def set_property(dataset: str, prop: str, value: str) -> None:

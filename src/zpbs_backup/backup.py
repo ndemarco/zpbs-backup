@@ -58,15 +58,6 @@ class BackupSummary:
         return (self.end_time - self.start_time).total_seconds()
 
 
-def get_mountpoint(dataset_name: str) -> str:
-    """Get the mountpoint for a ZFS dataset.
-
-    For now, assume the mountpoint is /{dataset_name}.
-    In practice, we could query `zfs get mountpoint`.
-    """
-    return f"/{dataset_name}"
-
-
 class BackupOrchestrator:
     """Orchestrates backup operations for discovered datasets."""
 
@@ -152,9 +143,18 @@ class BackupOrchestrator:
         start_time = datetime.now()
         backup_id = dataset.get_backup_id(self.hostname)
         namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
-        mountpoint = get_mountpoint(dataset.name)
+        mountpoint = dataset.mountpoint
 
         self._log(f"Backing up {dataset.name} -> {backup_id}")
+
+        if not mountpoint:
+            self._log(f"  Skipped: no mountpoint (mountpoint=none or legacy)")
+            return BackupResult(
+                dataset=dataset,
+                success=True,
+                skipped=True,
+                skip_reason="no mountpoint",
+            )
 
         if self.dry_run:
             self._log(f"  [DRY-RUN] Would backup {mountpoint}")
