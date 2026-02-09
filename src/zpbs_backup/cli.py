@@ -57,8 +57,8 @@ def main() -> None:
 
 
 @main.command()
-@click.option("--orphans", is_flag=True, help="Show orphaned backups in PBS")
-@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("-o", "--orphans", is_flag=True, help="Show orphaned backups in PBS")
+@click.option("-j", "--json", "json_output", is_flag=True, help="Output as JSON")
 def status(orphans: bool, json_output: bool) -> None:
     """Show backup status for all discovered datasets."""
     try:
@@ -165,13 +165,21 @@ def _show_orphans(client: PBSClient, datasets: list[Dataset], hostname: str) -> 
         click.echo(f"  - {group.backup_type}/{group.backup_id}{ns_str}")
 
 
+SYSTEMD_UNIT = "zpbs-backup.service"
+
+
 @main.command()
-@click.option("--dry-run", is_flag=True, help="Show what would be backed up without running")
-@click.option("--dataset", "pattern", help="Only backup datasets matching pattern")
-@click.option("--force", is_flag=True, help="Bypass schedule check")
+@click.option("-n", "--dry-run", is_flag=True, help="Show what would be backed up without running")
+@click.option("-d", "--dataset", "pattern", help="Only backup datasets matching pattern")
+@click.option("-f", "--force", is_flag=True, help="Bypass schedule check")
 @click.option("--no-notify", is_flag=True, help="Disable email notification")
-def run(dry_run: bool, pattern: str | None, force: bool, no_notify: bool) -> None:
+@click.option("-b", "--bg", is_flag=True, help="Run in background via systemd")
+def run(dry_run: bool, pattern: str | None, force: bool, no_notify: bool, bg: bool) -> None:
     """Run backups for all due datasets."""
+    if bg:
+        _run_via_systemd()
+        return
+
     try:
         config = load_config()
     except ValueError as e:
@@ -198,6 +206,27 @@ def run(dry_run: bool, pattern: str | None, force: bool, no_notify: bool) -> Non
     # Exit with error if any failures
     if summary.failed > 0:
         sys.exit(1)
+
+
+def _run_via_systemd() -> None:
+    """Trigger backup via systemd and return immediately."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "start", "--no-block", SYSTEMD_UNIT],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        click.echo("Error: systemctl not found", err=True)
+        sys.exit(1)
+
+    if result.returncode != 0:
+        click.echo(f"Error: {result.stderr.strip()}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Backup started in background via {SYSTEMD_UNIT}")
+    click.echo(f"  Follow logs:  journalctl -u {SYSTEMD_UNIT} -f")
+    click.echo(f"  Check status: systemctl is-active {SYSTEMD_UNIT}")
 
 
 @main.command()
@@ -268,8 +297,8 @@ def audit() -> None:
 
 
 @main.command("show-config")
-@click.option("--verbose", "-v", is_flag=True, help="Show all config sources in priority order")
-@click.option("--json", "json_output", is_flag=True, help="Machine-parseable JSON output")
+@click.option("-v", "--verbose", is_flag=True, help="Show all config sources in priority order")
+@click.option("-j", "--json", "json_output", is_flag=True, help="Machine-parseable JSON output")
 def show_config(verbose: bool, json_output: bool) -> None:
     """Show PBS connection configuration and verify connectivity.
 
@@ -368,8 +397,8 @@ def _show_config_sources_verbose() -> None:
 
 
 @main.command()
-@click.option("--dry-run", is_flag=True, help="Show what would be pruned without doing it")
-@click.option("--dataset", "pattern", help="Only prune datasets matching pattern")
+@click.option("-n", "--dry-run", is_flag=True, help="Show what would be pruned without doing it")
+@click.option("-d", "--dataset", "pattern", help="Only prune datasets matching pattern")
 def prune(dry_run: bool, pattern: str | None) -> None:
     """Apply retention policies to backup snapshots."""
     try:
@@ -435,7 +464,7 @@ def get_property_cmd(dataset: str, property: str) -> None:
 @main.command("set")
 @click.argument("property_value")
 @click.argument("dataset")
-@click.option("--clear", is_flag=True, help="When setting backup=false, also clear all properties")
+@click.option("-c", "--clear", is_flag=True, help="When setting backup=false, also clear all properties")
 @click.option("-r", "--recursive", is_flag=True, help="Apply recursively to descendants")
 def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: bool) -> None:
     """Set a zpbs property on a dataset.
@@ -532,7 +561,7 @@ def inherit_cmd(recursive: bool, property: str, dataset: str) -> None:
 
 
 @main.command("send-test-notification")
-@click.option("--show-only", is_flag=True, help="Only show the message, don't send")
+@click.option("-s", "--show-only", is_flag=True, help="Only show the message, don't send")
 def send_test_notification(show_only: bool) -> None:
     """Send a test notification to verify configuration.
 

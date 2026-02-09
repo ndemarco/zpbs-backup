@@ -198,10 +198,11 @@ Run backups for due datasets:
 
 ```bash
 zpbs-backup run                      # Run all due backups
-zpbs-backup run --dry-run            # Show what would happen
-zpbs-backup run --force              # Ignore schedule, run all
-zpbs-backup run --dataset 'tank/*'   # Only matching datasets
+zpbs-backup run -n                   # Show what would happen (--dry-run)
+zpbs-backup run -f                   # Ignore schedule, run all (--force)
+zpbs-backup run -d 'tank/*'         # Only matching datasets (--dataset)
 zpbs-backup run --no-notify          # Skip email notification
+zpbs-backup run -b                   # Run in background via systemd (--bg)
 ```
 
 ### Audit
@@ -291,13 +292,13 @@ zpbs-backup status
 4. Test with dry-run:
 
 ```bash
-zpbs-backup run --dry-run
+zpbs-backup run -n
 ```
 
 5. Run a manual backup:
 
 ```bash
-zpbs-backup run
+zpbs-backup run -b  # background via systemd
 ```
 
 6. Once confident, switch timers:

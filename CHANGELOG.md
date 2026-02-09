@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-09
+
+### Added
+- `run --bg` / `run -b`: trigger backup in background via systemd, returns immediately
+- POSIX short options for all commands: `-n` (dry-run), `-f` (force), `-d` (dataset), `-j` (json), `-v` (verbose), `-b` (background), `-c` (clear), `-s` (show-only), `-o` (orphans), `-r` (recursive)
+
 ## [0.4.2] - 2026-02-09
 
 ### Fixed
