@@ -34,6 +34,53 @@ class TestBackupSnapshot:
         assert snapshot.backup_id == ""
         assert snapshot.size is None
 
+    def test_from_dict_missing_backup_time(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp is None
+
+    def test_from_dict_zero_backup_time(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": 0,
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp is None
+
+    def test_from_dict_iso_string_timestamp(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": "2024-06-15T10:30:00",
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp is not None
+        assert snapshot.timestamp.year == 2024
+        assert snapshot.timestamp.month == 6
+        assert snapshot.timestamp.day == 15
+
+    def test_from_dict_invalid_string_timestamp(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": "not-a-date",
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp is None
+
+    def test_from_dict_epoch_before_2000_treated_as_none(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": 100,  # 1970-01-01 00:01:40
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp is None
+
 
 class TestBackupGroup:
     """Tests for BackupGroup class."""

@@ -156,6 +156,18 @@ class BackupOrchestrator:
                 skip_reason="no mountpoint",
             )
 
+        if not dataset.mounted:
+            reason = "not mounted"
+            if not dataset.canmount:
+                reason += " (canmount=off)"
+            self._log(f"  Skipped: {reason}")
+            return BackupResult(
+                dataset=dataset,
+                success=True,
+                skipped=True,
+                skip_reason=reason,
+            )
+
         if self.dry_run:
             self._log(f"  [DRY-RUN] Would backup {mountpoint}")
             return BackupResult(

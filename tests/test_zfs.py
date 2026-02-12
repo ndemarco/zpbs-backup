@@ -6,6 +6,7 @@ from zpbs_backup.zfs import (
     Dataset,
     PropertyValue,
     Schedule,
+    _parse_dataset_output,
     validate_property_value,
     PROP_BACKUP,
     PROP_SCHEDULE,
@@ -119,6 +120,52 @@ class TestDataset:
     def test_get_auto_namespace_root_dataset(self):
         ds = Dataset(name="tank", properties={})
         assert ds.get_auto_namespace("myhost") == "myhost/tank"
+
+
+    def test_mounted_defaults_true(self):
+        ds = Dataset(name="tank/data", properties={})
+        assert ds.mounted is True
+
+    def test_canmount_defaults_true(self):
+        ds = Dataset(name="tank/data", properties={})
+        assert ds.canmount is True
+
+    def test_mounted_false(self):
+        ds = Dataset(name="tank/data", properties={}, mounted=False)
+        assert ds.mounted is False
+
+    def test_canmount_false(self):
+        ds = Dataset(name="tank/data", properties={}, canmount=False)
+        assert ds.canmount is False
+
+
+class TestParseDatasetOutput:
+    """Tests for _parse_dataset_output with mounted/canmount."""
+
+    def test_mounted_yes(self):
+        output = "tank/data\tmounted\tyes\t-\n"
+        datasets = _parse_dataset_output(output)
+        assert datasets["tank/data"].mounted is True
+
+    def test_mounted_no(self):
+        output = "tank/data\tmounted\tno\t-\n"
+        datasets = _parse_dataset_output(output)
+        assert datasets["tank/data"].mounted is False
+
+    def test_canmount_on(self):
+        output = "tank/data\tcanmount\ton\t-\n"
+        datasets = _parse_dataset_output(output)
+        assert datasets["tank/data"].canmount is True
+
+    def test_canmount_off(self):
+        output = "tank/data\tcanmount\toff\t-\n"
+        datasets = _parse_dataset_output(output)
+        assert datasets["tank/data"].canmount is False
+
+    def test_canmount_noauto(self):
+        output = "tank/data\tcanmount\tnoauto\t-\n"
+        datasets = _parse_dataset_output(output)
+        assert datasets["tank/data"].canmount is False
 
 
 class TestValidatePropertyValue:

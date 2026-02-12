@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-02-12
+
+### Fixed
+- `status` showing "683 months ago" for recently backed-up datasets — timestamp parsing now handles missing, zero, or string `backup-time` values from PBS
+
+### Added
+- Automatically skip datasets with `canmount=off` or `mounted=no` (organizational/hierarchy-only datasets that hold no data)
+
 ## [0.5.0] - 2026-02-09
 
 ### Added

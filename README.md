@@ -159,6 +159,8 @@ zpbs-backup run --force
 
 Properties are inherited through the ZFS dataset hierarchy. Set `backup=true` on a parent dataset to enable backup for all children, then selectively disable with `backup=false`.
 
+Datasets with `canmount=off` (used for organizational hierarchy — they hold no data themselves) are automatically skipped during backup. Their child datasets with their own mountpoints are backed up normally.
+
 ```bash
 # Enable backup for entire pool
 zpbs-backup set backup=true tank

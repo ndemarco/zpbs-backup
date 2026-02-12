@@ -7,6 +7,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 from .config import PBSConfig
 
@@ -17,15 +18,27 @@ class BackupSnapshot:
 
     backup_type: str  # 'host', 'vm', 'ct'
     backup_id: str
-    timestamp: datetime
+    timestamp: Optional[datetime] = None
     size: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> BackupSnapshot:
         """Create from PBS JSON output."""
-        # Parse backup-time which is Unix timestamp
-        backup_time = data.get("backup-time", 0)
-        timestamp = datetime.fromtimestamp(backup_time)
+        backup_time = data.get("backup-time")
+        timestamp: Optional[datetime] = None
+
+        if backup_time:
+            if isinstance(backup_time, (int, float)):
+                timestamp = datetime.fromtimestamp(backup_time)
+            elif isinstance(backup_time, str):
+                try:
+                    timestamp = datetime.fromisoformat(backup_time)
+                except ValueError:
+                    timestamp = None
+
+        # Sanity check: discard timestamps before year 2000 (likely epoch junk)
+        if timestamp is not None and timestamp.year < 2000:
+            timestamp = None
 
         return cls(
             backup_type=data.get("backup-type", "host"),
@@ -166,8 +179,9 @@ class PBSClient:
 
             group = groups[key]
             group.snapshot_count += 1
-            if group.last_backup is None or snapshot.timestamp > group.last_backup:
-                group.last_backup = snapshot.timestamp
+            if snapshot.timestamp is not None:
+                if group.last_backup is None or snapshot.timestamp > group.last_backup:
+                    group.last_backup = snapshot.timestamp
 
         return list(groups.values())
 
@@ -185,7 +199,10 @@ class PBSClient:
         """
         snapshots = self.list_snapshots(namespace)
 
-        matching = [s for s in snapshots if s.backup_id == backup_id]
+        matching = [
+            s for s in snapshots
+            if s.backup_id == backup_id and s.timestamp is not None
+        ]
         if not matching:
             return None
 

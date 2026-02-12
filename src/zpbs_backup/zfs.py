@@ -65,6 +65,8 @@ class Dataset:
     name: str
     properties: dict[str, PropertyValue] = field(default_factory=dict)
     mountpoint: str | None = None  # None if mountpoint=none/legacy/-
+    mounted: bool = True
+    canmount: bool = True
 
     @property
     def backup_enabled(self) -> bool:
@@ -169,6 +171,10 @@ def _parse_dataset_output(stdout: str) -> dict[str, Dataset]:
             # none, legacy, and - mean no usable mountpoint
             if value not in ("none", "legacy", "-"):
                 datasets[name].mountpoint = value
+        elif prop == "mounted":
+            datasets[name].mounted = value == "yes"
+        elif prop == "canmount":
+            datasets[name].canmount = value == "on"
         else:
             datasets[name].properties[prop] = PropertyValue(value=value, source=source)
 
@@ -182,7 +188,7 @@ def discover_datasets() -> list[Dataset]:
         List of Dataset objects with backup enabled, sorted by priority.
     """
     # Get all zpbs properties plus mountpoint for all filesystems
-    props = ",".join(ALL_PROPERTIES) + ",mountpoint"
+    props = ",".join(ALL_PROPERTIES) + ",mountpoint,mounted,canmount"
     result = run_zfs_command(
         ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
     )
@@ -202,7 +208,7 @@ def get_all_datasets() -> list[Dataset]:
     Returns:
         List of all Dataset objects that have any zpbs property set.
     """
-    props = ",".join(ALL_PROPERTIES) + ",mountpoint"
+    props = ",".join(ALL_PROPERTIES) + ",mountpoint,mounted,canmount"
     result = run_zfs_command(
         ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
     )
@@ -229,7 +235,7 @@ def get_dataset(name: str) -> Dataset:
     Raises:
         subprocess.CalledProcessError: If the dataset doesn't exist
     """
-    props = ",".join(ALL_PROPERTIES) + ",mountpoint"
+    props = ",".join(ALL_PROPERTIES) + ",mountpoint,mounted,canmount"
     result = run_zfs_command(
         ["get", "-H", "-o", "name,property,value,source", props, name]
     )
