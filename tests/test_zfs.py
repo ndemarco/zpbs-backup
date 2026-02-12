@@ -9,6 +9,7 @@ from zpbs_backup.zfs import (
     _parse_dataset_output,
     validate_property_value,
     PROP_BACKUP,
+    PROP_COMMENT,
     PROP_SCHEDULE,
     PROP_RETENTION,
     PROP_NAMESPACE,
@@ -121,6 +122,39 @@ class TestDataset:
         ds = Dataset(name="tank", properties={})
         assert ds.get_auto_namespace("myhost") == "myhost/tank"
 
+
+    def test_comment_local(self):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_COMMENT: PropertyValue(value="my backup", source="local"),
+            },
+        )
+        assert ds.comment == "my backup"
+
+    def test_comment_inherited_returns_none(self):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_COMMENT: PropertyValue(
+                    value="parent comment", source="inherited from tank"
+                ),
+            },
+        )
+        assert ds.comment is None
+
+    def test_comment_unset_returns_none(self):
+        ds = Dataset(name="tank/data", properties={})
+        assert ds.comment is None
+
+    def test_comment_dash_returns_none(self):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_COMMENT: PropertyValue(value="-", source="-"),
+            },
+        )
+        assert ds.comment is None
 
     def test_mounted_defaults_true(self):
         ds = Dataset(name="tank/data", properties={})
@@ -240,6 +274,29 @@ class TestValidatePropertyValue:
         valid, error = validate_property_value(PROP_NAMESPACE, "my namespace")
         assert not valid
         assert "alphanumeric" in error
+
+    def test_comment_valid(self):
+        valid, _ = validate_property_value(PROP_COMMENT, "My backup note")
+        assert valid
+
+    def test_comment_empty(self):
+        valid, error = validate_property_value(PROP_COMMENT, "")
+        assert not valid
+        assert "cannot be empty" in error
+
+    def test_comment_whitespace_only(self):
+        valid, error = validate_property_value(PROP_COMMENT, "   ")
+        assert not valid
+        assert "cannot be empty" in error
+
+    def test_comment_too_long(self):
+        valid, error = validate_property_value(PROP_COMMENT, "a" * 257)
+        assert not valid
+        assert "256" in error
+
+    def test_comment_max_length_ok(self):
+        valid, _ = validate_property_value(PROP_COMMENT, "a" * 256)
+        assert valid
 
     def test_unknown_property(self):
         valid, error = validate_property_value("other:prop", "value")

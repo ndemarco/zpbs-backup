@@ -21,6 +21,7 @@ PROP_SCHEDULE = "zpbs:schedule"
 PROP_RETENTION = "zpbs:retention"
 PROP_NAMESPACE = "zpbs:namespace"
 PROP_PRIORITY = "zpbs:priority"
+PROP_COMMENT = "zpbs:comment"
 
 ALL_PROPERTIES = [
     PROP_BACKUP,
@@ -28,6 +29,7 @@ ALL_PROPERTIES = [
     PROP_RETENTION,
     PROP_NAMESPACE,
     PROP_PRIORITY,
+    PROP_COMMENT,
 ]
 
 # Default values
@@ -111,6 +113,18 @@ class Dataset:
             except ValueError:
                 pass
         return DEFAULT_PRIORITY
+
+    @property
+    def comment(self) -> str | None:
+        """Return the snapshot comment, or None if not set locally.
+
+        Only local values are used — inherited values are ignored so that
+        each dataset gets its own auto-generated note by default.
+        """
+        prop = self.properties.get(PROP_COMMENT)
+        if prop and prop.is_set and prop.is_local:
+            return prop.value
+        return None
 
     @property
     def pool(self) -> str:
@@ -341,6 +355,12 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
                 f"{short} can only contain alphanumeric characters, "
                 "dashes, underscores, and slashes",
             )
+
+    elif prop == PROP_COMMENT:
+        if not value.strip():
+            return False, f"{short} cannot be empty"
+        if len(value) > 256:
+            return False, f"{short} must be at most 256 characters, got {len(value)}"
 
     elif not prop.startswith("zpbs:"):
         return False, f"Unknown property '{prop}'"

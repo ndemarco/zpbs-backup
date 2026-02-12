@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-02-12
+
+### Added
+- Snapshot notes: after each successful backup, sets a descriptive comment on the PBS snapshot visible in the web UI
+- `zpbs:comment` ZFS property: override the auto-generated snapshot note per dataset (local-only, not inherited)
+
 ## [0.5.2] - 2026-02-12
 
 ### Fixed

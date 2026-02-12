@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from zpbs_backup.pbs import BackupGroup, BackupSnapshot
+from zpbs_backup.pbs import BackupGroup, BackupSnapshot, sanitize_notes
 
 
 class TestBackupSnapshot:
@@ -102,6 +102,77 @@ class TestBackupSnapshot:
         }
         snapshot = BackupSnapshot.from_dict(data)
         assert snapshot.timestamp.month == 1  # backup-time wins
+
+    def test_from_dict_stores_epoch(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": 1704067200,
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.backup_time_epoch == 1704067200
+
+    def test_from_dict_epoch_none_when_missing(self):
+        data = {"backup-type": "host", "backup-id": "myhost-tank-data"}
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.backup_time_epoch is None
+
+    def test_from_dict_epoch_none_when_pre_2000(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": 100,
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.backup_time_epoch is None
+
+    def test_from_dict_epoch_from_iso_string(self):
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": "2024-06-15T10:30:00",
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.backup_time_epoch is not None
+        assert isinstance(snapshot.backup_time_epoch, int)
+
+
+class TestSanitizeNotes:
+    """Tests for sanitize_notes function."""
+
+    def test_plain_text_unchanged(self):
+        assert sanitize_notes("hello world") == "hello world"
+
+    def test_strips_newlines_and_tabs(self):
+        assert sanitize_notes("hello\nworld\ttab\r\n") == "hello world tab"
+
+    def test_strips_html_tags(self):
+        assert sanitize_notes("<b>bold</b> text") == "bold text"
+
+    def test_strips_script_tags(self):
+        assert sanitize_notes("<script>alert(1)</script>") == "alert(1)"
+
+    def test_strips_javascript_uri(self):
+        assert sanitize_notes("javascript:alert(1)") == "alert(1)"
+
+    def test_strips_event_handlers(self):
+        assert sanitize_notes("onclick=alert(1)") == "alert(1)"
+
+    def test_truncates_at_256(self):
+        long = "a" * 300
+        result = sanitize_notes(long)
+        assert len(result) == 256
+        assert result.endswith("...")
+
+    def test_short_text_not_truncated(self):
+        text = "a" * 256
+        assert sanitize_notes(text) == text
+
+    def test_collapses_multiple_spaces(self):
+        assert sanitize_notes("hello    world") == "hello world"
+
+    def test_empty_string(self):
+        assert sanitize_notes("") == ""
 
 
 class TestBackupGroup:

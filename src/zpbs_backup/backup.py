@@ -9,10 +9,14 @@ from datetime import datetime
 from typing import Callable, TextIO
 
 from .config import PBSConfig, get_hostname
-from .pbs import PBSClient
+import logging
+
+from .pbs import PBSClient, sanitize_notes
 from .retention import DEFAULT_RETENTION, RetentionPolicy, parse_retention
 from .scheduler import format_last_backup, is_backup_due
 from .zfs import Dataset, discover_datasets
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -85,6 +89,36 @@ class BackupOrchestrator:
         print(message, file=self.output)
         if self._progress_callback:
             self._progress_callback(message)
+
+    def _set_snapshot_notes(
+        self, dataset: Dataset, backup_id: str, namespace: str | None
+    ) -> None:
+        """Set notes on the most recent snapshot. Best-effort."""
+        comment = dataset.comment or (
+            f"{self.hostname}:{dataset.mountpoint} (zpbs-backup)"
+        )
+        notes = sanitize_notes(comment)
+
+        # Find the most recent snapshot to get its epoch
+        snapshots = self.client.list_snapshots(namespace)
+        matching = [
+            s
+            for s in snapshots
+            if s.backup_id == backup_id and s.backup_time_epoch is not None
+        ]
+        if not matching:
+            logger.warning("Could not find snapshot to set notes on for %s", backup_id)
+            return
+
+        latest = max(matching, key=lambda s: s.backup_time_epoch)
+        ok = self.client.set_snapshot_notes(
+            backup_id=backup_id,
+            backup_time_epoch=latest.backup_time_epoch,
+            notes=notes,
+            namespace=namespace,
+        )
+        if not ok:
+            logger.warning("Failed to set snapshot notes for %s", backup_id)
 
     def discover(self, pattern: str | None = None) -> list[Dataset]:
         """Discover datasets to back up.
@@ -193,6 +227,7 @@ class BackupOrchestrator:
 
         if result.returncode == 0:
             self._log(f"  Completed in {duration:.1f}s")
+            self._set_snapshot_notes(dataset, backup_id, namespace)
             return BackupResult(
                 dataset=dataset,
                 success=True,

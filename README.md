@@ -154,6 +154,7 @@ zpbs-backup run --force
 | `zpbs:retention` | `7d,4w,6m,1y` | `7d,4w,6m,1y` | Retention policy |
 | `zpbs:namespace` | string | auto-derived | PBS namespace |
 | `zpbs:priority` | 1-100 | 50 | Lower = backup first |
+| `zpbs:comment` | string (max 256) | auto-generated | PBS snapshot note (local-only, not inherited) |
 
 ### Inheritance
 

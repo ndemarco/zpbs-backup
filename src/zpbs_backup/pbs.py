@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from .config import PBSConfig
@@ -19,6 +20,7 @@ class BackupSnapshot:
     backup_type: str  # 'host', 'vm', 'ct'
     backup_id: str
     timestamp: Optional[datetime] = None
+    backup_time_epoch: int | None = None
     size: int | None = None
 
     @classmethod
@@ -26,24 +28,29 @@ class BackupSnapshot:
         """Create from PBS JSON output."""
         backup_time = data.get("backup-time") or data.get("last-backup")
         timestamp: Optional[datetime] = None
+        epoch: int | None = None
 
         if backup_time:
             if isinstance(backup_time, (int, float)):
                 timestamp = datetime.fromtimestamp(backup_time)
+                epoch = int(backup_time)
             elif isinstance(backup_time, str):
                 try:
                     timestamp = datetime.fromisoformat(backup_time)
+                    epoch = int(timestamp.timestamp())
                 except ValueError:
                     timestamp = None
 
         # Sanity check: discard timestamps before year 2000 (likely epoch junk)
         if timestamp is not None and timestamp.year < 2000:
             timestamp = None
+            epoch = None
 
         return cls(
             backup_type=data.get("backup-type", "host"),
             backup_id=data.get("backup-id", ""),
             timestamp=timestamp,
+            backup_time_epoch=epoch,
             size=data.get("size"),
         )
 
@@ -56,6 +63,26 @@ class BackupGroup:
     backup_id: str
     last_backup: datetime | None = None
     snapshot_count: int = 0
+
+
+def sanitize_notes(text: str) -> str:
+    """Sanitize a notes string for safe use in PBS snapshot comments.
+
+    Strips control characters, HTML tags, JS patterns, and truncates.
+    """
+    # Collapse newlines, carriage returns, tabs to single space
+    text = re.sub(r"[\n\r\t]+", " ", text)
+    # Strip HTML tags
+    text = re.sub(r"<[^>]*>", "", text)
+    # Strip javascript: URIs and on*= event handlers
+    text = re.sub(r"javascript:", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bon\w+=", "", text, flags=re.IGNORECASE)
+    # Collapse multiple spaces
+    text = re.sub(r" {2,}", " ", text).strip()
+    # Truncate
+    if len(text) > 256:
+        text = text[:253] + "..."
+    return text
 
 
 class PBSClient:
@@ -249,6 +276,40 @@ class PBSClient:
 
         # No timeout for backups — they can run for hours
         return self._run(args, check=False, capture_output=False, timeout=None)
+
+    def set_snapshot_notes(
+        self,
+        backup_id: str,
+        backup_time_epoch: int,
+        notes: str,
+        namespace: str | None = None,
+    ) -> bool:
+        """Set notes on a PBS snapshot. Best-effort, never raises.
+
+        Args:
+            backup_id: The backup ID
+            backup_time_epoch: Unix epoch of the snapshot
+            notes: The notes text (will be sanitized)
+            namespace: Optional namespace
+
+        Returns:
+            True if successful
+        """
+        ts = datetime.fromtimestamp(backup_time_epoch, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        snapshot_path = f"host/{backup_id}/{ts}"
+        safe_notes = sanitize_notes(notes)
+
+        args = ["snapshot", "notes", "update", snapshot_path, safe_notes]
+        if namespace:
+            args.extend(["--ns", namespace])
+
+        try:
+            result = self._run(args, check=False, timeout=10)
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, Exception):
+            return False
 
     def create_namespace(self, namespace: str) -> bool:
         """Create a namespace if it doesn't exist.
