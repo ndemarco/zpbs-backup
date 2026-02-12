@@ -24,7 +24,7 @@ class BackupSnapshot:
     @classmethod
     def from_dict(cls, data: dict) -> BackupSnapshot:
         """Create from PBS JSON output."""
-        backup_time = data.get("backup-time")
+        backup_time = data.get("backup-time") or data.get("last-backup")
         timestamp: Optional[datetime] = None
 
         if backup_time:

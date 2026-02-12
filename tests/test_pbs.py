@@ -81,6 +81,28 @@ class TestBackupSnapshot:
         snapshot = BackupSnapshot.from_dict(data)
         assert snapshot.timestamp is None
 
+    def test_from_dict_last_backup_field(self):
+        """PBS list returns groups with 'last-backup' instead of 'backup-time'."""
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "last-backup": 1704067200,  # 2024-01-01 00:00:00 UTC
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp is not None
+        assert snapshot.timestamp.year == 2024
+
+    def test_from_dict_backup_time_preferred_over_last_backup(self):
+        """backup-time takes precedence when both fields are present."""
+        data = {
+            "backup-type": "host",
+            "backup-id": "myhost-tank-data",
+            "backup-time": 1704067200,  # 2024-01-01
+            "last-backup": 1706745600,  # 2024-02-01
+        }
+        snapshot = BackupSnapshot.from_dict(data)
+        assert snapshot.timestamp.month == 1  # backup-time wins
+
 
 class TestBackupGroup:
     """Tests for BackupGroup class."""
