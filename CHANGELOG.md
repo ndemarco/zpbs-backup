@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-17
+
+### Added
+- Prometheus Pushgateway integration: push 6 metrics after each backup run (last run timestamp, last success timestamp, duration, successful/failed/skipped dataset counts)
+- `ZPBS_PUSHGATEWAY` environment variable: set to Pushgateway base URL to enable metrics; unset or empty disables (no-op)
+- State persistence at `/var/lib/zpbs-backup/state.json`: `last_success_timestamp_seconds` survives failed runs so the staleness alert reflects the true last success
+- `ZPBS_PUSHGATEWAY` added to diagnostic env-var display list
+
 ## [0.5.2] - 2026-02-12
 
 ### Fixed

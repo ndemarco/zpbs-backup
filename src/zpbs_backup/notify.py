@@ -22,6 +22,8 @@ class NotificationConfig:
     external_script: str | None = None
     # Syslog notification (for centralized logging)
     syslog_enabled: bool = True
+    # Prometheus Pushgateway base URL (e.g. http://10.0.16.16:9091)
+    pushgateway_url: str | None = None
 
 
 def get_notification_config() -> NotificationConfig:
@@ -32,6 +34,7 @@ def get_notification_config() -> NotificationConfig:
     enabled = os.environ.get("ZPBS_NOTIFY", "true").lower() == "true"
     recipient = os.environ.get("ZPBS_NOTIFY_EMAIL")
     syslog_enabled = os.environ.get("ZPBS_SYSLOG", "true").lower() == "true"
+    pushgateway_url = os.environ.get("ZPBS_PUSHGATEWAY") or None
 
     # Check for external notification script
     external_script = None
@@ -49,6 +52,7 @@ def get_notification_config() -> NotificationConfig:
         recipient=recipient,
         external_script=external_script,
         syslog_enabled=syslog_enabled,
+        pushgateway_url=pushgateway_url,
     )
 
 
@@ -176,6 +180,10 @@ def send_notification(
     # Always send to syslog if enabled (for centralized logging)
     if config.syslog_enabled:
         _send_to_syslog(summary, hostname)
+
+    # Push metrics to Pushgateway (best-effort, never raises)
+    from .metrics import push_to_gateway
+    push_to_gateway(summary, hostname, config.pushgateway_url)
 
     subject, body = format_summary_for_email(summary, hostname)
 

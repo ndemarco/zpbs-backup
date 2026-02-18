@@ -28,6 +28,8 @@ _ENV_VAR_NAMES = [
     "PBS_API_TOKEN_NAME",
     "PBS_SERVER",
     "PBS_DATASTORE",
+    # Metrics / observability
+    "ZPBS_PUSHGATEWAY",
     # Legacy aliases
     "REPOSITORY",
     "PASSWORD",
