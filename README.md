@@ -20,7 +20,8 @@ Automatically discovers ZFS datasets with `zpbs:backup=true` and backs them up t
 
 ## Installation
 
-### Debian / Ubuntu / Proxmox VE (.deb)
+<details open>
+<summary><strong>📦 Debian / Ubuntu / Proxmox VE (.deb)</strong></summary>
 
 Download the latest `.deb` from the [Releases](https://github.com/ndemarco/zpbs-backup/releases) page:
 
@@ -35,15 +36,33 @@ This installs everything: CLI, systemd timer, and config directory. The timer is
 sudo systemctl start zpbs-backup.timer
 ```
 
-### RHEL / Rocky / Alma (.rpm)
+</details>
+
+<details>
+<summary><strong>📦 RHEL / Rocky / Alma (.rpm)</strong></summary>
+
+Download the latest `.rpm` from the [Releases](https://github.com/ndemarco/zpbs-backup/releases) page:
 
 ```bash
 sudo rpm -i zpbs-backup-<version>.x86_64.rpm
 ```
 
-Requires `python3.11` from AppStream (`dnf install python3.11`).
+Requires `python3.11` from AppStream:
 
-### From PyPI
+```bash
+sudo dnf install python3.11
+```
+
+Configure PBS credentials at `/etc/zpbs-backup/pbs.conf`, then start the timer:
+
+```bash
+sudo systemctl start zpbs-backup.timer
+```
+
+</details>
+
+<details>
+<summary><strong>🐍 PyPI (pip / pipx)</strong></summary>
 
 ```bash
 pip install zpbs-backup
@@ -51,15 +70,25 @@ pip install zpbs-backup
 pipx install zpbs-backup
 ```
 
-When installing via pip/pipx, systemd units are not installed automatically. See [Systemd Integration](#systemd-integration) below for manual setup.
+When installing via pip/pipx, systemd units are not installed automatically. After installation:
 
-### From Source
+1. Configure PBS credentials (environment variables or config file)
+2. See [Systemd Integration](#systemd-integration) below for manual setup
+
+</details>
+
+<details>
+<summary><strong>📝 From Source</strong></summary>
 
 ```bash
 git clone https://github.com/ndemarco/zpbs-backup.git
 cd zpbs-backup
 pip install .
 ```
+
+Then configure PBS credentials and set up systemd units as described in [Systemd Integration](#systemd-integration).
+
+</details>
 
 ### System Requirements
 
