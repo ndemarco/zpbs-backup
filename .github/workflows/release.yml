@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install .[dev]
+      - run: pytest
+
+  build-wheel:
+    runs-on: ubuntu-latest
+    needs: test
+    name: Build wheel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install build
+      - run: python -m build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  build-packages:
+    runs-on: ubuntu-latest
+    needs: build-wheel
+    name: Build packages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y nfpm
+      - run: pip install build
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist/
+      - run: bash packaging/build-packages.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+
+  upload-release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-wheel
+      - build-packages
+    name: Upload to release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist/
+      - run: ls -lh dist/
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/*.whl dist/*.deb dist/*.rpm \
+            --clobber
