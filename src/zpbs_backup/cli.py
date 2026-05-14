@@ -174,7 +174,20 @@ SYSTEMD_UNIT = "zpbs-backup.service"
 @click.option("-f", "--force", is_flag=True, help="Bypass schedule check")
 @click.option("--no-notify", is_flag=True, help="Disable email notification")
 @click.option("-b", "--bg", is_flag=True, help="Run in background via systemd")
-def run(dry_run: bool, pattern: str | None, force: bool, no_notify: bool, bg: bool) -> None:
+@click.option(
+    "--change-detection-mode",
+    type=click.Choice(["legacy", "data", "metadata"]),
+    default=None,
+    help="Mode to detect file changes since last backup (default: PBS legacy)",
+)
+def run(
+    dry_run: bool,
+    pattern: str | None,
+    force: bool,
+    no_notify: bool,
+    bg: bool,
+    change_detection_mode: str | None,
+) -> None:
     """Run backups for all due datasets."""
     if bg:
         _run_via_systemd()
@@ -195,6 +208,7 @@ def run(dry_run: bool, pattern: str | None, force: bool, no_notify: bool, bg: bo
         config=config,
         dry_run=dry_run,
         force=force,
+        change_detection_mode=change_detection_mode,
     )
 
     summary = orchestrator.run(pattern)

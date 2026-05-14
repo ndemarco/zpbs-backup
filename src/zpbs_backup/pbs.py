@@ -214,6 +214,7 @@ class PBSClient:
         source_path: str,
         archive_name: str = "root.pxar",
         namespace: str | None = None,
+        change_detection_mode: str | None = None,
         dry_run: bool = False,
     ) -> subprocess.CompletedProcess:
         """Run a backup.
@@ -223,6 +224,7 @@ class PBSClient:
             source_path: The path to back up (e.g., '/tank/files')
             archive_name: Name of the archive (default: root.pxar)
             namespace: Optional namespace
+            change_detection_mode: Change detection mode (legacy, data, metadata)
             dry_run: If True, don't actually run the backup
 
         Returns:
@@ -237,6 +239,9 @@ class PBSClient:
 
         if namespace:
             args.extend(["--ns", namespace])
+
+        if change_detection_mode:
+            args.extend(["--change-detection-mode", change_detection_mode])
 
         if dry_run:
             # Return a fake successful result for dry-run

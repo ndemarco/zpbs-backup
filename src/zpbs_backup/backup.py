@@ -66,6 +66,7 @@ class BackupOrchestrator:
         config: PBSConfig,
         dry_run: bool = False,
         force: bool = False,
+        change_detection_mode: str | None = None,
         output: TextIO | None = None,
     ):
         self.config = config
@@ -73,6 +74,7 @@ class BackupOrchestrator:
         self.hostname = get_hostname()
         self.dry_run = dry_run
         self.force = force
+        self.change_detection_mode = change_detection_mode
         self.output = output or sys.stdout
         self._progress_callback: Callable[[str], None] | None = None
 
@@ -186,6 +188,7 @@ class BackupOrchestrator:
             backup_id=backup_id,
             source_path=mountpoint,
             namespace=namespace,
+            change_detection_mode=self.change_detection_mode,
             dry_run=self.dry_run,
         )
 

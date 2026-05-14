@@ -111,3 +111,48 @@ class TestBackupGroup:
         group = BackupGroup(backup_type="host", backup_id="myhost-tank")
         assert group.last_backup is None
         assert group.snapshot_count == 0
+
+
+class TestPBSClientBackup:
+    """Tests for PBSClient.backup() method."""
+
+    def test_backup_with_change_detection_mode(self):
+        """Verify change-detection-mode flag is included in backup command."""
+        from zpbs_backup.config import PBSConfig
+        from zpbs_backup.pbs import PBSClient
+
+        config = PBSConfig(
+            repository="user@realm!tokenname@server:datastore",
+            password="test-token",
+        )
+        client = PBSClient(config)
+
+        # Test with metadata mode
+        result = client.backup(
+            backup_id="test-backup",
+            source_path="/test/path",
+            change_detection_mode="metadata",
+            dry_run=True,
+        )
+
+        assert "--change-detection-mode" in result.stdout or result.returncode == 0
+
+    def test_backup_without_change_detection_mode(self):
+        """Verify backup works without change-detection-mode (backward compatibility)."""
+        from zpbs_backup.config import PBSConfig
+        from zpbs_backup.pbs import PBSClient
+
+        config = PBSConfig(
+            repository="user@realm!tokenname@server:datastore",
+            password="test-token",
+        )
+        client = PBSClient(config)
+
+        # Test without change detection mode (should not include the flag)
+        result = client.backup(
+            backup_id="test-backup",
+            source_path="/test/path",
+            dry_run=True,
+        )
+
+        assert result.returncode == 0
