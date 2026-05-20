@@ -1,10 +1,12 @@
 """Tests for PBS client wrapper."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
-from zpbs_backup.pbs import BackupGroup, BackupSnapshot
+from zpbs_backup.config import PBSConfig
+from zpbs_backup.pbs import BackupGroup, BackupSnapshot, PBSClient, _parse_server_address
 
 
 class TestBackupSnapshot:
@@ -22,7 +24,8 @@ class TestBackupSnapshot:
         assert snapshot.backup_type == "host"
         assert snapshot.backup_id == "myhost-tank-data"
         assert snapshot.size == 1024000
-        assert snapshot.timestamp.year == 2024
+        assert snapshot.timestamp is not None
+        assert snapshot.timestamp.timestamp() == 1704067200
 
     def test_from_dict_minimal(self):
         data = {
@@ -90,7 +93,7 @@ class TestBackupSnapshot:
         }
         snapshot = BackupSnapshot.from_dict(data)
         assert snapshot.timestamp is not None
-        assert snapshot.timestamp.year == 2024
+        assert snapshot.timestamp.timestamp() == 1704067200
 
     def test_from_dict_backup_time_preferred_over_last_backup(self):
         """backup-time takes precedence when both fields are present."""
@@ -101,7 +104,8 @@ class TestBackupSnapshot:
             "last-backup": 1706745600,  # 2024-02-01
         }
         snapshot = BackupSnapshot.from_dict(data)
-        assert snapshot.timestamp.month == 1  # backup-time wins
+        assert snapshot.timestamp is not None
+        assert snapshot.timestamp.timestamp() == 1704067200  # backup-time wins
 
 
 class TestBackupGroup:
@@ -156,3 +160,57 @@ class TestPBSClientBackup:
         )
 
         assert result.returncode == 0
+
+
+class TestParseServerAddress:
+    """Tests for _parse_server_address."""
+
+    def test_host_only_defaults_to_8007(self):
+        assert _parse_server_address("pbs.example.com") == ("pbs.example.com", 8007)
+
+    def test_host_and_port(self):
+        assert _parse_server_address("pbs.example.com:8443") == ("pbs.example.com", 8443)
+
+    def test_invalid_port_falls_back_to_default(self):
+        assert _parse_server_address("pbs.example.com:notaport") == (
+            "pbs.example.com:notaport",
+            8007,
+        )
+
+
+class TestClockSkew:
+    """Tests for clock skew probe."""
+
+    def _client(self) -> PBSClient:
+        return PBSClient(
+            PBSConfig(repository="u@p!t@pbs.example.com:store", server="pbs.example.com")
+        )
+
+    def test_skew_zero_when_server_matches_local(self):
+        now = datetime.now(timezone.utc)
+        with patch.object(PBSClient, "get_server_time", return_value=now):
+            skew = self._client().get_clock_skew_seconds()
+        assert skew is not None
+        assert abs(skew) < 1.0
+
+    def test_skew_positive_when_server_ahead(self):
+        future = datetime.now(timezone.utc) + timedelta(seconds=120)
+        with patch.object(PBSClient, "get_server_time", return_value=future):
+            skew = self._client().get_clock_skew_seconds()
+        assert skew is not None
+        assert 119 < skew < 121
+
+    def test_skew_negative_when_server_behind(self):
+        past = datetime.now(timezone.utc) - timedelta(seconds=90)
+        with patch.object(PBSClient, "get_server_time", return_value=past):
+            skew = self._client().get_clock_skew_seconds()
+        assert skew is not None
+        assert -91 < skew < -89
+
+    def test_skew_none_when_probe_fails(self):
+        with patch.object(PBSClient, "get_server_time", return_value=None):
+            assert self._client().get_clock_skew_seconds() is None
+
+    def test_get_server_time_returns_none_when_no_server_configured(self):
+        client = PBSClient(PBSConfig(repository=""))
+        assert client.get_server_time() is None

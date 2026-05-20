@@ -13,6 +13,7 @@ Automatically discovers ZFS datasets with `zpbs:backup=true` and backs them up t
 - **Auto-discovery**: Finds datasets to back up via ZFS custom properties
 - **Inheritance**: Child datasets inherit backup settings from parents
 - **Schedule-aware**: Only runs backups when due (daily/weekly/monthly)
+- **Skip-unchanged**: Uses ZFS `written` and snapshot creation time to skip datasets that are byte-identical to their last backup — no PBS round-trip for dormant data
 - **Priority ordering**: Back up critical data first
 - **Retention policies**: Per-dataset retention settings
 - **Dry-run mode**: See what would happen without making changes
@@ -235,6 +236,11 @@ zpbs-backup run -d 'tank/*'         # Only matching datasets (--dataset)
 zpbs-backup run --no-notify          # Skip email notification
 zpbs-backup run -b                   # Run in background via systemd (--bg)
 ```
+
+A run skips any due dataset where ZFS reports `written=0` and the most recent
+snapshot is at least 60s older than the last successful backup. The skip is
+disabled automatically if a pre-flight check finds clock skew between this host
+and PBS larger than the 60s safety margin; `--force` bypasses both checks.
 
 ### Audit
 

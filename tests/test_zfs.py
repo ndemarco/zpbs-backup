@@ -1,12 +1,18 @@
 """Tests for ZFS operations."""
 
+import subprocess
+from unittest.mock import patch
+
 import pytest
 
+from zpbs_backup import zfs as zfs_mod
 from zpbs_backup.zfs import (
     Dataset,
     PropertyValue,
     Schedule,
     _parse_dataset_output,
+    get_latest_snapshot_creation,
+    get_written_bytes,
     validate_property_value,
     PROP_BACKUP,
     PROP_SCHEDULE,
@@ -14,6 +20,12 @@ from zpbs_backup.zfs import (
     PROP_NAMESPACE,
     PROP_PRIORITY,
 )
+
+
+def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=["zfs"], returncode=returncode, stdout=stdout, stderr=""
+    )
 
 
 class TestPropertyValue:
@@ -245,3 +257,44 @@ class TestValidatePropertyValue:
         valid, error = validate_property_value("other:prop", "value")
         assert not valid
         assert "Unknown property" in error
+
+
+class TestGetWrittenBytes:
+    """Tests for get_written_bytes."""
+
+    def test_zero_when_unchanged_since_snapshot(self):
+        with patch.object(zfs_mod, "run_zfs_command", return_value=_completed("0\n")):
+            assert get_written_bytes("tank/data") == 0
+
+    def test_positive_when_writes_since_snapshot(self):
+        with patch.object(zfs_mod, "run_zfs_command", return_value=_completed("5316608\n")):
+            assert get_written_bytes("tank/data") == 5316608
+
+    def test_returns_none_when_command_fails(self):
+        with patch.object(
+            zfs_mod, "run_zfs_command", return_value=_completed("", returncode=1)
+        ):
+            assert get_written_bytes("tank/missing") is None
+
+    def test_returns_none_on_nonint_output(self):
+        with patch.object(zfs_mod, "run_zfs_command", return_value=_completed("-\n")):
+            assert get_written_bytes("tank/data") is None
+
+
+class TestGetLatestSnapshotCreation:
+    """Tests for get_latest_snapshot_creation."""
+
+    def test_returns_latest_creation_epoch(self):
+        output = "1779290434\n1779290447\n"
+        with patch.object(zfs_mod, "run_zfs_command", return_value=_completed(output)):
+            assert get_latest_snapshot_creation("tank/data") == 1779290447
+
+    def test_returns_none_when_no_snapshots(self):
+        with patch.object(zfs_mod, "run_zfs_command", return_value=_completed("")):
+            assert get_latest_snapshot_creation("tank/data") is None
+
+    def test_returns_none_when_command_fails(self):
+        with patch.object(
+            zfs_mod, "run_zfs_command", return_value=_completed("", returncode=1)
+        ):
+            assert get_latest_snapshot_creation("tank/missing") is None

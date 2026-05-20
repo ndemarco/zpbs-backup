@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-20
+
+### Added
+- Skip-unchanged optimization (default on): the `run` command skips datasets whose live filesystem is byte-identical to a snapshot already captured by the previous backup. Uses native ZFS `written` property and snapshot creation time — no state, no extra IO. For pools of hundreds of mostly-dormant datasets this elides nearly all PBS calls.
+- Pre-flight clock-skew probe against the PBS HTTP `Date:` header. If skew exceeds the 60s safety margin (or the probe fails), the skip-unchanged optimization is disabled for that run and the tool falls back to schedule-only behavior. Never blocks the run.
+
+### Notes
+- `--force` continues to back up everything regardless of either check.
+- The skew check is one HTTPS HEAD per run; not user-configurable.
+
 ## [0.6.0] - 2026-02-17
 
 ### Added
