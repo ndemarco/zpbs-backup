@@ -12,7 +12,15 @@ from .config import PBSConfig, get_hostname
 from .pbs import PBSClient
 from .retention import DEFAULT_RETENTION, RetentionPolicy, parse_retention
 from .scheduler import format_last_backup, is_backup_due
-from .zfs import Dataset, discover_datasets
+from .zfs import (
+    Dataset,
+    discover_datasets,
+    get_latest_snapshot_creation,
+    get_written_bytes,
+)
+
+
+SKEW_MARGIN_SECONDS = 60
 
 
 @dataclass
@@ -77,6 +85,7 @@ class BackupOrchestrator:
         self.change_detection_mode = change_detection_mode
         self.output = output or sys.stdout
         self._progress_callback: Callable[[str], None] | None = None
+        self.skip_unchanged_safe: bool = True
 
     def set_progress_callback(self, callback: Callable[[str], None]) -> None:
         """Set a callback for progress updates."""
@@ -120,18 +129,81 @@ class BackupOrchestrator:
                 plan.append((ds, True, None))
                 continue
 
-            # Check schedule
             backup_id = ds.get_backup_id(self.hostname)
             namespace = ds.namespace or ds.get_auto_namespace(self.hostname)
             last_backup = self.client.get_last_backup_time(backup_id, namespace)
 
-            if is_backup_due(ds.schedule, last_backup):
-                plan.append((ds, True, None))
-            else:
+            if not is_backup_due(ds.schedule, last_backup):
                 reason = f"not due (last: {format_last_backup(last_backup)})"
                 plan.append((ds, False, reason))
+                continue
+
+            unchanged_reason = self._unchanged_skip_reason(ds, last_backup)
+            if unchanged_reason is not None:
+                plan.append((ds, False, unchanged_reason))
+                continue
+
+            plan.append((ds, True, None))
 
         return plan
+
+    def _unchanged_skip_reason(
+        self, ds: Dataset, last_backup: datetime | None
+    ) -> str | None:
+        """Return a skip reason if the dataset is provably unchanged since last backup.
+
+        Skip when:
+          - clock skew with PBS is within the safety margin (set in run()),
+          - a previous successful backup exists,
+          - `zfs get written` is 0 (live FS identical to most recent snapshot),
+          - the most recent snapshot was created at least SKEW_MARGIN_SECONDS
+            before the last backup (so it must have been captured by that backup).
+        """
+        if not self.skip_unchanged_safe:
+            return None
+        if last_backup is None:
+            return None
+        written = get_written_bytes(ds.name)
+        snap_creation = get_latest_snapshot_creation(ds.name)
+        if written != 0 or snap_creation is None:
+            return None
+        if snap_creation + SKEW_MARGIN_SECONDS > last_backup.timestamp():
+            return None
+        snap_str = datetime.fromtimestamp(snap_creation).strftime("%Y-%m-%d %H:%M")
+        return f"unchanged (written=0, latest snap @ {snap_str})"
+
+    def _preflight_skew_check(self) -> None:
+        """Measure clock skew against PBS and decide if skip-unchanged is safe.
+
+        On error or excessive skew, disables skip-unchanged for this run and falls
+        back to schedule-only behavior. Never blocks the run.
+        """
+        if self.force:
+            return
+        skew = self.client.get_clock_skew_seconds()
+        if skew is None:
+            self._log(
+                "Warning: could not measure clock skew with PBS; "
+                "disabling skip-unchanged optimization for this run"
+            )
+            self.skip_unchanged_safe = False
+            return
+        abs_skew = abs(skew)
+        direction = "ahead of" if skew > 0 else "behind"
+        if abs_skew < 5:
+            return
+        if abs_skew < SKEW_MARGIN_SECONDS:
+            self._log(
+                f"Clock skew: PBS is {abs_skew:.1f}s {direction} local "
+                f"(within {SKEW_MARGIN_SECONDS}s safety margin)"
+            )
+            return
+        self._log(
+            f"Warning: clock skew of {abs_skew:.1f}s ({direction} local) exceeds "
+            f"{SKEW_MARGIN_SECONDS}s safety margin — disabling skip-unchanged "
+            f"optimization for this run. Check NTP on both hosts."
+        )
+        self.skip_unchanged_safe = False
 
     def backup_dataset(self, dataset: Dataset) -> BackupResult:
         """Back up a single dataset.
@@ -227,6 +299,8 @@ class BackupOrchestrator:
             self._log("No datasets found with zpbs:backup=true")
             summary.end_time = datetime.now()
             return summary
+
+        self._preflight_skew_check()
 
         plan = self.plan(datasets)
 

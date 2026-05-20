@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import ssl
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 from .config import PBSConfig
+
+
+PBS_DEFAULT_PORT = 8007
+
+
+def _parse_server_address(server: str) -> tuple[str, int]:
+    """Split 'host' or 'host:port' into (host, port). Defaults to PBS_DEFAULT_PORT."""
+    if ":" in server:
+        host, _, port_str = server.rpartition(":")
+        try:
+            return host, int(port_str)
+        except ValueError:
+            pass
+    return server, PBS_DEFAULT_PORT
 
 
 @dataclass
@@ -127,6 +144,49 @@ class PBSClient:
                     "at least DatastoreAudit on the datastore path (e.g. /datastore/mystore)."
                 )
             raise ConnectionError(msg)
+
+    def get_server_time(self, timeout: float = 5.0) -> datetime | None:
+        """Probe PBS server wall-clock via the HTTP Date header.
+
+        Returns a timezone-aware UTC datetime, or None on any failure.
+        The Date header is sent by the PBS web/API server on every response.
+        Verification is intentionally skipped — we read only a public header,
+        no secrets are exchanged, and PBS servers commonly use self-signed certs.
+        """
+        if not self.config.server:
+            return None
+        host, port = _parse_server_address(self.config.server)
+        ctx = ssl._create_unverified_context()
+        try:
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+            try:
+                conn.request("HEAD", "/")
+                resp = conn.getresponse()
+                date_str = resp.getheader("Date")
+            finally:
+                conn.close()
+        except (OSError, http.client.HTTPException):
+            return None
+        if not date_str:
+            return None
+        try:
+            parsed = parsedate_to_datetime(date_str)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def get_clock_skew_seconds(self) -> float | None:
+        """Return PBS_time - local_time in seconds, or None if probe failed.
+
+        Positive means PBS is ahead of local; negative means PBS is behind local.
+        """
+        server_time = self.get_server_time()
+        if server_time is None:
+            return None
+        local_time = datetime.now(timezone.utc)
+        return (server_time - local_time).total_seconds()
 
     def list_snapshots(self, namespace: str | None = None) -> list[BackupSnapshot]:
         """List all backup snapshots.
