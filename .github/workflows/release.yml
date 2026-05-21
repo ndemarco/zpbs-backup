@@ -45,7 +45,9 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      - run: |
+      - name: Install nfpm
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
           sudo apt-get update
           sudo apt-get install -y nfpm
       - run: pip install build
@@ -77,10 +79,13 @@ jobs:
           name: packages
           path: dist/
       - run: ls -lh dist/
-      - name: Upload to release
+      - name: Create or upload release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if ! gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release create "${{ github.ref_name }}" --generate-notes
+          fi
           gh release upload "${{ github.ref_name }}" \
             dist/*.whl dist/*.deb dist/*.rpm \
             --clobber
