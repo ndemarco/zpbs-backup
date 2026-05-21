@@ -82,6 +82,7 @@ jobs:
       - name: Create or upload release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if ! gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
             gh release create "${{ github.ref_name }}" --generate-notes
