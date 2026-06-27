@@ -258,21 +258,28 @@ class TestLoadConfig:
         config = load_config()
         assert config.keyfile is None
 
-    def test_config_file_loading(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("with_encryption", [False, True])
+    def test_config_file_loading(self, with_encryption, tmp_path, monkeypatch):
         # Clear any env vars
         for var in [
             "PBS_REPOSITORY", "PBS_PASSWORD", "PBS_FINGERPRINT",
             "PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE",
-            "PBS_API_TOKEN_SECRET", "REPOSITORY", "PASSWORD", "FINGERPRINT",
+            "PBS_API_TOKEN_SECRET", "PBS_ENCRYPTION_KEYFILE", "REPOSITORY", 
+            "PASSWORD", "FINGERPRINT",
         ]:
             monkeypatch.delenv(var, raising=False)
 
         # Create a config file
         conf = tmp_path / "pbs.conf"
-        conf.write_text(
+
+        contents = (
             "PBS_REPOSITORY=backup@pbs!tok@host:ds\n"
             "PBS_PASSWORD=secret\n"
         )
+        if with_encryption:
+            contents += "PBS_ENCRYPTION_KEYFILE=/path/to/key.enc\n"
+            
+        conf.write_text(contents)
 
         # Patch CONFIG_PATHS to use our temp file
         monkeypatch.setattr(
@@ -282,11 +289,17 @@ class TestLoadConfig:
         assert config.repository == "backup@pbs!tok@host:ds"
         assert config.sources.get("PBS_REPOSITORY") == str(conf)
 
+        if with_encryption:
+            assert config.keyfile == "/path/to/key.enc"
+        else:
+            assert config.keyfile is None
+
     def test_no_config_raises(self, monkeypatch):
         for var in [
             "PBS_REPOSITORY", "PBS_PASSWORD", "PBS_FINGERPRINT",
             "PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE",
-            "PBS_API_TOKEN_SECRET", "REPOSITORY", "PASSWORD", "FINGERPRINT",
+            "PBS_API_TOKEN_SECRET", "PBS_ENCRYPTION_KEYFILE", "REPOSITORY", 
+            "PASSWORD", "FINGERPRINT",
         ]:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
