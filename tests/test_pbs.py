@@ -1,7 +1,7 @@
 """Tests for PBS client wrapper."""
 
+import unittest.mock as umock
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 
 import pytest
 
@@ -188,27 +188,27 @@ class TestClockSkew:
 
     def test_skew_zero_when_server_matches_local(self):
         now = datetime.now(timezone.utc)
-        with patch.object(PBSClient, "get_server_time", return_value=now):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=now):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert abs(skew) < 1.0
 
     def test_skew_positive_when_server_ahead(self):
         future = datetime.now(timezone.utc) + timedelta(seconds=120)
-        with patch.object(PBSClient, "get_server_time", return_value=future):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=future):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert 119 < skew < 121
 
     def test_skew_negative_when_server_behind(self):
         past = datetime.now(timezone.utc) - timedelta(seconds=90)
-        with patch.object(PBSClient, "get_server_time", return_value=past):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=past):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert -91 < skew < -89
 
     def test_skew_none_when_probe_fails(self):
-        with patch.object(PBSClient, "get_server_time", return_value=None):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=None):
             assert self._client().get_clock_skew_seconds() is None
 
     def test_get_server_time_returns_none_when_no_server_configured(self):
