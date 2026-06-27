@@ -297,6 +297,11 @@ class PBSClient:
             backup_id,
         ]
 
+        if self.config.keyfile is not None:
+            args.extend(
+                ["--keyfile", self.config.keyfile]
+            )
+
         if namespace:
             args.extend(["--ns", namespace])
 
