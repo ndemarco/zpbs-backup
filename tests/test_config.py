@@ -244,9 +244,19 @@ class TestLoadConfig:
         monkeypatch.setenv("PBS_SERVER", "pbs.example.com")
         monkeypatch.setenv("PBS_DATASTORE", "backups")
         monkeypatch.setenv("PBS_API_TOKEN_SECRET", "secret")
+        monkeypatch.setenv("PBS_ENCRYPTION_KEYFILE", "/path/to/key.enc")
         config = load_config()
         assert config.repository == "backup@pbs!mytoken@pbs.example.com:backups"
         assert config.password == "secret"
+        assert config.keyfile == "/path/to/key.enc"
+
+    def test_no_encryption_is_valid_config(self, monkeypatch):
+        monkeypatch.setenv("PBS_REPOSITORY", "backup@pbs!tok@host:ds")
+        monkeypatch.setenv("PBS_PASSWORD", "secret")
+
+        monkeypatch.delenv("PBS_ENCRYPTION_KEYFILE", raising=False)
+        config = load_config()
+        assert config.keyfile is None
 
     def test_config_file_loading(self, tmp_path, monkeypatch):
         # Clear any env vars
