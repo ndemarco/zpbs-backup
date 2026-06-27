@@ -238,6 +238,7 @@ class TestLoadConfig:
         assert config.sources.get("PBS_REPOSITORY") == "environment"
 
     def test_individual_env_vars(self, monkeypatch):
+        monkeypatch.delenv("PBS_REPOSITORY")
         monkeypatch.setenv("PBS_USER", "backup@pbs")
         monkeypatch.setenv("PBS_API_TOKEN_NAME", "mytoken")
         monkeypatch.setenv("PBS_SERVER", "pbs.example.com")
