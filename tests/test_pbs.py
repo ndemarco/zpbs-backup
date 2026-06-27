@@ -161,6 +161,45 @@ class TestPBSClientBackup:
 
         assert result.returncode == 0
 
+    @pytest.mark.parametrize("with_encryption", [False, True])
+    def test_backup_passes_right_arguments_to_backup_client(self, with_encryption, monkeypatch):
+        from zpbs_backup.config import PBSConfig
+        from zpbs_backup.pbs import PBSClient
+
+        config = PBSConfig(
+            repository="user@realm!tokenname@server:datastore",
+            password="test-token",
+            keyfile="/path/to/key.enc" if with_encryption else None
+        )
+        client = PBSClient(config)
+
+        monkeypatch.setattr("os.environ", {"USERS_ENV_VAR1": "VALUE1", "USERS_ENV_VAR2": "VALUE2"})
+
+        with umock.patch("subprocess.run") as subprocess_run:
+            client.backup(
+                backup_id="test-backup",
+                source_path="/test/path",
+            )
+            assert subprocess_run.call_args == umock.call(
+                [
+                    "proxmox-backup-client",
+                    "backup",
+                    "root.pxar:/test/path",
+                    "--backup-id",
+                    "test-backup",
+                ] + (["--keyfile", "/path/to/key.enc"] if with_encryption else []),
+                env={
+                    "PBS_REPOSITORY": "user@realm!tokenname@server:datastore",
+                    "PBS_PASSWORD": "test-token",
+                    "USERS_ENV_VAR1": "VALUE1",
+                    "USERS_ENV_VAR2": "VALUE2",
+                },
+                capture_output=False,
+                text=True,
+                check=False,
+                timeout=None,
+            )
+
 
 class TestParseServerAddress:
     """Tests for _parse_server_address."""
