@@ -344,6 +344,10 @@ def show_config(verbose: bool, json_output: bool) -> None:
     click.echo(f"  Datastore:        {config.datastore or '(unknown)'}")
     click.echo(f"  Token secret:     {mask_secret(config.password)}")
     click.echo(f"  Fingerprint:      {config.fingerprint or '(not set)'}")
+    if config.keyfile is None:
+        click.echo("  Encryption:       Disabled")
+    else:
+        click.echo(f"  Encryption:       Enabled using '{config.keyfile}'")
 
     if verbose:
         click.echo("")
@@ -384,6 +388,7 @@ def _show_config_json(config: PBSConfig) -> None:
         "api_token_name": config.token_name,
         "datastore": config.datastore,
         "fingerprint": config.fingerprint,
+        "keyfile": config.keyfile,
         "repository": config.repository,
         "active_source": config.active_source,
         "connected": connected,
