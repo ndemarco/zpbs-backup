@@ -77,7 +77,7 @@ def status(orphans: bool, json_output: bool) -> None:
     if json_output:
         output_data = []
         for ds in datasets:
-            backup_id = ds.get_backup_id(hostname)
+            backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
             namespace = ds.namespace or ds.get_auto_namespace(hostname)
             last_backup = client.get_last_backup_time(backup_id, namespace) if ds.backup_enabled else None
 
@@ -116,7 +116,7 @@ def status(orphans: bool, json_output: bool) -> None:
         priority = str(ds.priority) if ds.backup_enabled else "-"
 
         if ds.backup_enabled:
-            backup_id = ds.get_backup_id(hostname)
+            backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
             namespace = ds.namespace or ds.get_auto_namespace(hostname)
             last_backup = client.get_last_backup_time(backup_id, namespace)
             last_str = format_last_backup(last_backup)
@@ -137,15 +137,17 @@ def status(orphans: bool, json_output: bool) -> None:
 
     if orphans:
         click.echo("")
-        _show_orphans(client, datasets, hostname)
+        _show_orphans(client, datasets, hostname, config.backup_id_separator)
 
 
-def _show_orphans(client: PBSClient, datasets: list[Dataset], hostname: str) -> None:
+def _show_orphans(
+    client: PBSClient, datasets: list[Dataset], hostname: str, separator: str
+) -> None:
     """Show orphaned backup groups in PBS."""
     click.echo("Checking for orphaned backups...")
 
     # Get all expected backup IDs
-    expected_ids = {ds.get_backup_id(hostname) for ds in datasets if ds.backup_enabled}
+    expected_ids = {ds.get_backup_id(hostname, separator) for ds in datasets if ds.backup_enabled}
 
     # Get all backup groups from PBS
     all_groups = client.list_all_backup_groups()
@@ -263,7 +265,7 @@ def audit() -> None:
 
     # Get enabled datasets
     datasets = discover_datasets()
-    expected_ids = {ds.get_backup_id(hostname): ds for ds in datasets}
+    expected_ids = {ds.get_backup_id(hostname, config.backup_id_separator): ds for ds in datasets}
 
     click.echo(f"Auditing {len(datasets)} dataset(s)...")
     click.echo("")
@@ -271,7 +273,7 @@ def audit() -> None:
     # Check for never-backed-up datasets
     never_backed_up = []
     for ds in datasets:
-        backup_id = ds.get_backup_id(hostname)
+        backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
         namespace = ds.namespace or ds.get_auto_namespace(hostname)
         last_backup = client.get_last_backup_time(backup_id, namespace)
         if last_backup is None:

@@ -129,7 +129,7 @@ class BackupOrchestrator:
                 plan.append((ds, True, None))
                 continue
 
-            backup_id = ds.get_backup_id(self.hostname)
+            backup_id = ds.get_backup_id(self.hostname, self.config.backup_id_separator)
             namespace = ds.namespace or ds.get_auto_namespace(self.hostname)
             last_backup = self.client.get_last_backup_time(backup_id, namespace)
 
@@ -215,7 +215,7 @@ class BackupOrchestrator:
             BackupResult with outcome
         """
         start_time = datetime.now()
-        backup_id = dataset.get_backup_id(self.hostname)
+        backup_id = dataset.get_backup_id(self.hostname, self.config.backup_id_separator)
         namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
         mountpoint = dataset.mountpoint
 
@@ -380,7 +380,7 @@ class PruneOrchestrator:
         Returns:
             True if successful
         """
-        backup_id = dataset.get_backup_id(self.hostname)
+        backup_id = dataset.get_backup_id(self.hostname, self.config.backup_id_separator)
         namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
         policy = get_retention_policy(dataset)
 
