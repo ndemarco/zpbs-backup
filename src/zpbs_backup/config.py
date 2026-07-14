@@ -30,11 +30,17 @@ _ENV_VAR_NAMES = [
     "PBS_DATASTORE",
     # Metrics / observability
     "ZPBS_PUSHGATEWAY",
+    # Backup-id derivation
+    "ZPBS_BACKUP_ID_SEPARATOR",
     # Legacy aliases
     "REPOSITORY",
     "PASSWORD",
     "FINGERPRINT",
 ]
+
+# Default separator used when building a PBS backup-id from a dataset path.
+# "-" preserves historical ids ({hostname}-{path-with-slashes-as-dashes}).
+DEFAULT_BACKUP_ID_SEPARATOR = "-"
 
 
 @dataclass
@@ -59,6 +65,13 @@ class PBSConfig:
     token_name: str | None = None
     server: str | None = None
     datastore: str | None = None
+
+    # The string that replaces "/" in a dataset path (and joins the hostname
+    # prefix) when building the PBS backup-id. Default "-" keeps historical
+    # ids; set to e.g. "--" for a REVERSIBLE id when dataset name components
+    # may themselves contain "-" — split the id on the separator to recover
+    # the pool/dataset path (see Dataset.get_backup_id).
+    backup_id_separator: str = DEFAULT_BACKUP_ID_SEPARATOR
 
     # Source tracking: variable name → source description
     sources: dict[str, str] = field(default_factory=dict)
@@ -236,6 +249,26 @@ def _has_config(variables: dict[str, str]) -> bool:
     return has_repo or has_parts
 
 
+def validate_backup_id_separator(separator: str) -> str:
+    """Validate a backup-id separator.
+
+    The separator is inserted into PBS backup-ids, so it must be non-empty and
+    use only characters allowed in a PBS backup-id ([A-Za-z0-9_.-]).
+
+    Returns:
+        The separator unchanged if valid.
+
+    Raises:
+        ValueError: If the separator is empty or contains invalid characters.
+    """
+    if not separator or not re.fullmatch(r"[A-Za-z0-9_.\-]+", separator):
+        raise ValueError(
+            f"Invalid backup-id separator {separator!r}: must be non-empty and "
+            "contain only [A-Za-z0-9_.-] (the PBS backup-id character set)."
+        )
+    return separator
+
+
 def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
     """Create PBSConfig from a dictionary of variables."""
     # Get repository — direct or composed from parts
@@ -261,6 +294,10 @@ def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
     if repository and not all([user, token_name, server, datastore]):
         user, token_name, server, datastore = _parse_repository(repository)
 
+    separator = validate_backup_id_separator(
+        variables.get("ZPBS_BACKUP_ID_SEPARATOR") or DEFAULT_BACKUP_ID_SEPARATOR
+    )
+
     return PBSConfig(
         repository=repository,
         password=password,
@@ -269,6 +306,7 @@ def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
         token_name=token_name,
         server=server,
         datastore=datastore,
+        backup_id_separator=separator,
     )
 
 

@@ -17,6 +17,7 @@ from zpbs_backup.config import (
     get_all_config_sources,
     load_config,
     mask_secret,
+    validate_backup_id_separator,
 )
 
 
@@ -328,3 +329,36 @@ class TestPBSConfigGetEnv:
     def test_active_source_unknown(self):
         config = PBSConfig(repository="backup@pbs!tok@host:ds")
         assert config.active_source == "unknown"
+
+
+class TestBackupIdSeparator:
+    def test_default_is_dash(self):
+        config = _config_from_variables({"PBS_REPOSITORY": "backup@pbs!tok@host:ds"})
+        assert config.backup_id_separator == "-"
+
+    def test_custom_double_dash(self):
+        config = _config_from_variables(
+            {"PBS_REPOSITORY": "backup@pbs!tok@host:ds", "ZPBS_BACKUP_ID_SEPARATOR": "--"}
+        )
+        assert config.backup_id_separator == "--"
+
+    def test_empty_value_falls_back_to_default(self):
+        config = _config_from_variables(
+            {"PBS_REPOSITORY": "backup@pbs!tok@host:ds", "ZPBS_BACKUP_ID_SEPARATOR": ""}
+        )
+        assert config.backup_id_separator == "-"
+
+    def test_invalid_separator_raises(self):
+        with pytest.raises(ValueError):
+            _config_from_variables(
+                {"PBS_REPOSITORY": "backup@pbs!tok@host:ds", "ZPBS_BACKUP_ID_SEPARATOR": "a/b"}
+            )
+
+    def test_validate_accepts_valid(self):
+        assert validate_backup_id_separator("--") == "--"
+        assert validate_backup_id_separator("_") == "_"
+
+    def test_validate_rejects_invalid(self):
+        for bad in ["", "/", "a b", "x/y"]:
+            with pytest.raises(ValueError):
+                validate_backup_id_separator(bad)

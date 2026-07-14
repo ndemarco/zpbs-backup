@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Configurable backup-id separator via `ZPBS_BACKUP_ID_SEPARATOR` (env or config file; default `-`). A multi-character separator such as `--` yields **reversible** backup-ids — you can recover the dataset path from the PBS group name by stripping the host and splitting on the separator — which the default `-` cannot guarantee, since `-` is also legal in ZFS dataset names (`pool/a-b` and `pool/a/b` both flatten to `pool-a-b`). The separator joins the hostname prefix too, so IDs split uniformly; it is validated against the PBS backup-id character set. Default behavior is unchanged.
+
 ## [0.8.0] - 2026-05-20
 
 ### Added

@@ -348,11 +348,38 @@ sudo systemctl start zpbs-backup.timer
 
 ## Backup ID Format
 
-Backup IDs are generated as `{hostname}-{dataset-with-slashes-replaced}`:
+Backup IDs are generated as `{hostname}{sep}{dataset-with-slashes-replaced}`,
+where `{sep}` is the configurable **backup-id separator** (default `-`):
 - Dataset `tank/files/downloads` on host `storage-server`
 - Backup ID: `storage-server-tank-files-downloads`
 
-This maintains compatibility with existing backup IDs from the bash scripts.
+This default maintains compatibility with existing backup IDs from the bash
+scripts.
+
+### Reversible IDs (`ZPBS_BACKUP_ID_SEPARATOR`)
+
+Because the default separator (`-`) is also a legal character in ZFS dataset
+names, the default ID is **not reversible**: a `-` in the ID may be a path
+separator or part of a name (`pool/a-b` and `pool/a/b` both flatten to
+`pool-a-b`). If you need self-describing, unambiguous IDs — e.g. to recover the
+dataset layout from PBS group names alone during disaster recovery — set a
+multi-character separator that your dataset names do not contain:
+
+```bash
+# environment or /etc/zpbs-backup/pbs.conf
+export ZPBS_BACKUP_ID_SEPARATOR="--"
+```
+
+- Dataset `local-hdd/encrypted/device-backups` on host `s1-nas01`
+- Backup ID: `s1-nas01--local-hdd--encrypted--device-backups`
+- Recover the path: strip the host, then split the remainder on `--`.
+
+The separator joins the hostname prefix too, so the whole ID splits uniformly.
+It must be non-empty and use only PBS-backup-id characters (`[A-Za-z0-9_.-]`).
+Reversibility holds only while no dataset name component contains the separator
+or leads/trails with `-`. **Changing the separator changes every ID**, so
+existing backup groups become orphans (prune them with
+`proxmox-backup-client` and re-seed).
 
 ## Namespace Strategy
 
