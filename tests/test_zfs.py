@@ -125,6 +125,27 @@ class TestDataset:
         ds = Dataset(name="tank/data/files", properties={})
         assert ds.get_backup_id("myhost") == "myhost-tank-data-files"
 
+    def test_get_backup_id_default_matches_explicit_dash(self):
+        # Backward compatibility: the default equals the historical "-" form.
+        ds = Dataset(name="tank/data/files", properties={})
+        assert ds.get_backup_id("myhost") == ds.get_backup_id("myhost", "-")
+
+    def test_get_backup_id_custom_separator(self):
+        ds = Dataset(name="local-hdd/encrypted/device-backups", properties={})
+        assert (
+            ds.get_backup_id("s1-nas01", "--")
+            == "s1-nas01--local-hdd--encrypted--device-backups"
+        )
+
+    def test_get_backup_id_double_dash_is_reversible(self):
+        # The whole point of "--": recover the dataset path even when a
+        # component ("device-backups") contains the single-dash form.
+        host, name = "s1-nas01", "local-hdd/encrypted/device-backups"
+        ds = Dataset(name=name, properties={})
+        bid = ds.get_backup_id(host, "--")
+        recovered = "/".join(bid[len(host) + len("--"):].split("--"))
+        assert recovered == name
+
     def test_get_auto_namespace(self):
         ds = Dataset(name="tank/data/files", properties={})
         assert ds.get_auto_namespace("myhost") == "myhost/tank/data/files"

@@ -123,13 +123,21 @@ class Dataset:
         parts = self.name.split("/", 1)
         return parts[1] if len(parts) > 1 else ""
 
-    def get_backup_id(self, hostname: str) -> str:
+    def get_backup_id(self, hostname: str, separator: str = "-") -> str:
         """Generate the backup ID for this dataset.
 
-        Format: {hostname}-{dataset-name-with-slashes-replaced}
+        Format: {hostname}{separator}{dataset-path-with-slashes-replaced}
+
+        ``separator`` replaces every "/" in the dataset path AND joins the
+        hostname prefix, so the id splits uniformly on it. The default "-"
+        preserves historical ids. A multi-character separator such as "--"
+        makes the id REVERSIBLE when dataset name components may themselves
+        contain "-" (strip the known hostname, then split on the separator to
+        recover pool/dataset paths) — provided no component itself contains
+        the separator.
         """
-        dataset_part = self.name.replace("/", "-")
-        return f"{hostname}-{dataset_part}"
+        dataset_part = self.name.replace("/", separator)
+        return f"{hostname}{separator}{dataset_part}"
 
     def get_auto_namespace(self, hostname: str) -> str:
         """Generate the auto-derived namespace.
