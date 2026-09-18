@@ -1,0 +1,149 @@
+"""Tests for zpbs_backup.metrics module."""
+
+from __future__ import annotations
+
+import os
+import types
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from zpbs_backup import metrics as metrics_mod
+from zpbs_backup.metrics import push_to_gateway, write_textfile
+
+METRIC_NAMES = (
+    "zpbs_backup_last_run_timestamp_seconds",
+    "zpbs_backup_last_success_timestamp_seconds",
+    "zpbs_backup_duration_seconds",
+    "zpbs_backup_datasets_successful",
+    "zpbs_backup_datasets_failed",
+    "zpbs_backup_datasets_skipped",
+)
+
+
+def _summary(successful=0, failed=0, skipped=0, duration=0.0):
+    """Build a minimal stand-in for BackupSummary (metrics only reads these fields)."""
+    return types.SimpleNamespace(
+        successful=successful,
+        failed=failed,
+        skipped=skipped,
+        duration_seconds=duration,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_file(tmp_path_factory, monkeypatch):
+    """Never touch the real /var/lib/zpbs-backup/state.json from tests.
+
+    Uses a directory outside the per-test tmp_path, so it never shows up as
+    a stray file in tests that assert on a textfile_dir's own contents.
+    """
+    state_dir = tmp_path_factory.mktemp("zpbs-state")
+    monkeypatch.setattr(metrics_mod, "STATE_FILE", state_dir / "state.json")
+
+
+class TestPushToGateway:
+    def test_noop_when_url_missing(self):
+        summary = _summary(successful=1)
+        # No exception, no attempt to open urllib — url is falsy.
+        push_to_gateway(summary, "host1", None)
+        push_to_gateway(summary, "host1", "")
+
+    def test_puts_six_metrics_to_gateway_url(self):
+        summary = _summary(successful=2, failed=1, skipped=0, duration=5.0)
+        captured = {}
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(req, timeout=5):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["body"] = req.data.decode()
+            return _FakeResponse()
+
+        with mock.patch("zpbs_backup.metrics.urllib.request.urlopen", side_effect=fake_urlopen):
+            push_to_gateway(summary, "storage-server", "http://10.0.16.16:9091")
+
+        assert captured["url"] == (
+            "http://10.0.16.16:9091/metrics/job/zpbs_backup/instance/storage-server"
+        )
+        assert captured["method"] == "PUT"
+        for name in METRIC_NAMES:
+            assert name in captured["body"]
+        assert "zpbs_backup_datasets_successful 2" in captured["body"]
+        assert "zpbs_backup_datasets_failed 1" in captured["body"]
+
+    def test_push_failure_logs_and_does_not_raise(self, capsys):
+        summary = _summary(successful=1)
+        with mock.patch(
+            "zpbs_backup.metrics.urllib.request.urlopen",
+            side_effect=OSError("connection refused"),
+        ):
+            push_to_gateway(summary, "host1", "http://10.0.16.16:9091")
+        assert "zpbs-backup metrics: push failed" in capsys.readouterr().err
+
+
+class TestWriteTextfile:
+    def test_noop_when_dir_missing(self, tmp_path):
+        summary = _summary(successful=1)
+        write_textfile(summary, None)
+        write_textfile(summary, "")
+        assert list(tmp_path.iterdir()) == []
+
+    def test_writes_same_six_metrics_as_pushgateway(self, tmp_path):
+        summary = _summary(successful=3, failed=0, skipped=1, duration=12.5)
+        write_textfile(summary, str(tmp_path))
+
+        dest = tmp_path / "zpbs_backup.prom"
+        assert dest.exists()
+        content = dest.read_text()
+        for name in METRIC_NAMES:
+            assert name in content
+        assert "zpbs_backup_datasets_successful 3" in content
+        assert "zpbs_backup_datasets_skipped 1" in content
+        assert "zpbs_backup_duration_seconds 12.5" in content
+
+    def test_write_is_atomic_via_tempfile_and_replace(self, tmp_path):
+        summary = _summary(successful=1)
+
+        with mock.patch(
+            "zpbs_backup.metrics.os.replace", wraps=os.replace
+        ) as mock_replace:
+            write_textfile(summary, str(tmp_path))
+
+        assert mock_replace.call_count == 1
+        src, dst = mock_replace.call_args[0]
+        assert Path(src).parent == tmp_path
+        assert Path(src).name != "zpbs_backup.prom"
+        assert dst == tmp_path / "zpbs_backup.prom"
+
+        # No temp file left behind after a successful write.
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name != "zpbs_backup.prom"]
+        assert leftovers == []
+
+    def test_missing_dir_logs_error_and_does_not_raise(self, tmp_path, capsys):
+        summary = _summary(successful=1)
+        missing_dir = tmp_path / "does-not-exist"
+
+        write_textfile(summary, str(missing_dir))
+
+        assert not missing_dir.exists()
+        assert "zpbs-backup metrics: textfile write failed" in capsys.readouterr().err
+
+    def test_unwritable_dir_logs_error_and_does_not_raise(self, tmp_path, capsys):
+        summary = _summary(successful=1)
+
+        with mock.patch(
+            "zpbs_backup.metrics.tempfile.mkstemp",
+            side_effect=PermissionError("Permission denied"),
+        ):
+            write_textfile(summary, str(tmp_path))
+
+        assert "zpbs-backup metrics: textfile write failed" in capsys.readouterr().err
+        assert list(tmp_path.iterdir()) == []

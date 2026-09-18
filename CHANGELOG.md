@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-18
+
+### Added
+- `ZPBS_TEXTFILE_DIR` environment variable: set to a node_exporter textfile collector directory to write run metrics to `<dir>/zpbs_backup.prom` instead of (or alongside) pushing to a Pushgateway. Same six metric names as the Pushgateway path. The write is atomic (temp file plus `os.replace`).
+- `ZPBS_TEXTFILE_DIR` added to the diagnostic env-var display list next to `ZPBS_PUSHGATEWAY`.
+
+### Notes
+- `ZPBS_PUSHGATEWAY` and `ZPBS_TEXTFILE_DIR` are independent: set either, both, or neither. A missing or unwritable textfile directory logs an error to stderr and never fails the backup run.
+
 ## [0.8.0] - 2026-05-20
 
 ### Added
