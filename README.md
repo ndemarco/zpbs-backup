@@ -383,6 +383,22 @@ zpbs-backup run --no-notify          # Skip notification for this run
 export ZPBS_NOTIFY=false             # Disable notifications globally
 ```
 
+## Metrics
+
+Run metrics (last run timestamp, last success timestamp, duration, and
+successful/failed/skipped dataset counts) can be reported two ways, either or
+both:
+
+- Environment: `ZPBS_PUSHGATEWAY=http://10.0.16.16:9091` — push to a
+  Prometheus Pushgateway after each run.
+- Environment: `ZPBS_TEXTFILE_DIR=/var/lib/node_exporter/textfile_collector`
+  — write `zpbs_backup.prom` to a node_exporter textfile collector
+  directory (atomic write: temp file plus `os.replace`) for hosts that can't
+  reach a Pushgateway.
+
+Both are unset by default (no-op). If neither is set, no metrics are
+reported.
+
 ## Development
 
 ```bash

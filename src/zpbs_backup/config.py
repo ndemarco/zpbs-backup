@@ -30,6 +30,7 @@ _ENV_VAR_NAMES = [
     "PBS_DATASTORE",
     # Metrics / observability
     "ZPBS_PUSHGATEWAY",
+    "ZPBS_TEXTFILE_DIR",
     # Legacy aliases
     "REPOSITORY",
     "PASSWORD",

@@ -1,10 +1,12 @@
-"""Prometheus Pushgateway metrics reporting for zpbs-backup."""
+"""Prometheus metrics reporting for zpbs-backup (Pushgateway push and textfile)."""
 
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -34,24 +36,13 @@ def _write_last_success(ts: float) -> None:
         print(f"zpbs-backup metrics: could not write state file: {exc}", file=sys.stderr)
 
 
-def push_to_gateway(
-    summary: BackupSummary,
-    hostname: str,
-    pushgateway_url: str | None,
-) -> None:
-    """Push backup metrics to a Prometheus Pushgateway.
+def _render_metrics(summary: BackupSummary) -> bytes:
+    """Render the six zpbs_backup metrics in Prometheus text exposition format.
 
-    Args:
-        summary: Completed backup summary.
-        hostname: Instance label value (short hostname).
-        pushgateway_url: Base URL of the Pushgateway (e.g. ``http://10.0.16.16:9091``).
-            If ``None`` or empty, this function returns immediately (no-op).
+    Shared by both the Pushgateway and textfile transports so their output
+    (metric names, help/type lines, values) is identical.
     """
-    if not pushgateway_url:
-        return
-
-    now = time.time()
-    run_end_ts = now
+    run_end_ts = time.time()
 
     # Duration: prefer actual measured value, fall back to wall-clock estimate.
     duration = summary.duration_seconds if summary.duration_seconds is not None else 0.0
@@ -86,8 +77,26 @@ def push_to_gateway(
         f"zpbs_backup_datasets_skipped {summary.skipped}",
         "",
     ]
-    payload = "\n".join(lines).encode("utf-8")
+    return "\n".join(lines).encode("utf-8")
 
+
+def push_to_gateway(
+    summary: BackupSummary,
+    hostname: str,
+    pushgateway_url: str | None,
+) -> None:
+    """Push backup metrics to a Prometheus Pushgateway.
+
+    Args:
+        summary: Completed backup summary.
+        hostname: Instance label value (short hostname).
+        pushgateway_url: Base URL of the Pushgateway (e.g. ``http://10.0.16.16:9091``).
+            If ``None`` or empty, this function returns immediately (no-op).
+    """
+    if not pushgateway_url:
+        return
+
+    payload = _render_metrics(summary)
     url = f"{pushgateway_url.rstrip('/')}/metrics/job/zpbs_backup/instance/{hostname}"
 
     try:
@@ -101,3 +110,42 @@ def push_to_gateway(
             pass
     except Exception as exc:
         print(f"zpbs-backup metrics: push failed: {exc}", file=sys.stderr)
+
+
+def write_textfile(
+    summary: BackupSummary,
+    textfile_dir: str | None,
+) -> None:
+    """Write backup metrics to a node_exporter textfile collector file.
+
+    Writes the same six metrics as :func:`push_to_gateway` to
+    ``<textfile_dir>/zpbs_backup.prom``. The write is atomic (temp file in the
+    same directory, then ``os.replace``) so node_exporter never observes a
+    partial file.
+
+    Args:
+        summary: Completed backup summary.
+        textfile_dir: Directory scanned by node_exporter's textfile collector
+            (e.g. ``/var/lib/node_exporter/textfile_collector``). If ``None``
+            or empty, this function returns immediately (no-op). A missing or
+            unwritable directory logs an error and never raises — a metrics
+            failure must not fail the backup run.
+    """
+    if not textfile_dir:
+        return
+
+    dest_dir = Path(textfile_dir)
+    dest = dest_dir / "zpbs_backup.prom"
+    payload = _render_metrics(summary)
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=".zpbs_backup.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+            os.replace(tmp_path, dest)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+    except Exception as exc:
+        print(f"zpbs-backup metrics: textfile write failed: {exc}", file=sys.stderr)
