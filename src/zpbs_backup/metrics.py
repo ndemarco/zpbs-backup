@@ -141,6 +141,9 @@ def write_textfile(
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=".zpbs_backup.", suffix=".tmp")
         try:
+            # mkstemp creates the file 0600; node_exporter runs as its own
+            # unprivileged user and must be able to read it.
+            os.fchmod(fd, 0o644)
             with os.fdopen(fd, "wb") as f:
                 f.write(payload)
             os.replace(tmp_path, dest)
