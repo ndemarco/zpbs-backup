@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-19
+
 ### Fixed
 - `zpbs_backup.prom` is now written mode `0644`. It was `0600` (the `mkstemp` default), so node_exporter, running as its own unprivileged user, could not read it and the metrics never reached Prometheus.
 
