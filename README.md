@@ -119,6 +119,9 @@ export PBS_DATASTORE="backups"
 export PBS_API_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 export PBS_FINGERPRINT="AA:BB:CC:..."
 
+# Omit following if you don't want encryption enabled.
+export PBS_ENCRYPTION_KEYFILE="/path/to/key.enc"
+
 # Option 2: Config file
 # Config files are checked in priority order:
 #   1. ~/.config/zpbs-backup/pbs.conf  (per-user)
@@ -136,9 +139,29 @@ PBS_DATASTORE="backups"
 PBS_API_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 PBS_FINGERPRINT="AA:BB:CC:..."
 
+# Omit following if you don't want encryption enabled.
+PBS_ENCRYPTION_KEYFILE="/path/to/key.enc"
+
 # Shell variable interpolation is supported:
 # PBS_REPOSITORY="${PBS_USER}!${PBS_API_TOKEN_NAME}@${PBS_SERVER}:${PBS_DATASTORE}"
 ```
+
+> **Do not mix environment variables and the configuration file.** If
+> `PBS_REPOSITORY` (or its individual parts) is set in the environment, the
+> configuration file is ignored entirely. Define all variables in one place.
+
+### Encryption
+
+Setting `PBS_ENCRYPTION_KEYFILE` passes `--keyfile` to `proxmox-backup-client`,
+so every backup is encrypted client-side with that key.
+
+- **Keep a copy of the key off this host.** Without it, encrypted backups
+  cannot be restored. `proxmox-backup-client key paperkey` prints a
+  recoverable paper copy.
+- **Scheduled runs cannot prompt for a passphrase.** Either create the key
+  without one (`proxmox-backup-client key create --kdf none /path/to/key.enc`)
+  or set `PBS_ENCRYPTION_PASSWORD` in the systemd unit's environment. The
+  config file does not pass `PBS_ENCRYPTION_PASSWORD` through.
 
 Verify your configuration:
 

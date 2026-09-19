@@ -28,6 +28,7 @@ _ENV_VAR_NAMES = [
     "PBS_API_TOKEN_NAME",
     "PBS_SERVER",
     "PBS_DATASTORE",
+    "PBS_ENCRYPTION_KEYFILE",
     # Metrics / observability
     "ZPBS_PUSHGATEWAY",
     "ZPBS_TEXTFILE_DIR",
@@ -54,6 +55,7 @@ class PBSConfig:
     repository: str
     password: str | None = None
     fingerprint: str | None = None
+    keyfile: str | None = None # None implies "do not encrypt"
 
     # Parsed display fields
     user: str | None = None
@@ -257,6 +259,7 @@ def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
     )
 
     fingerprint = variables.get("PBS_FINGERPRINT", variables.get("FINGERPRINT"))
+    keyfile = variables.get("PBS_ENCRYPTION_KEYFILE", None)
 
     # Parse repository for display fields if not set from individual vars
     if repository and not all([user, token_name, server, datastore]):
@@ -270,6 +273,7 @@ def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
         token_name=token_name,
         server=server,
         datastore=datastore,
+        keyfile=keyfile,
     )
 
 

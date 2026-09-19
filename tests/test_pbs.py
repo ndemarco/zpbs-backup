@@ -1,7 +1,7 @@
 """Tests for PBS client wrapper."""
 
+import unittest.mock as umock
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 
 import pytest
 
@@ -161,6 +161,45 @@ class TestPBSClientBackup:
 
         assert result.returncode == 0
 
+    @pytest.mark.parametrize("with_encryption", [False, True])
+    def test_backup_passes_right_arguments_to_backup_client(self, with_encryption, monkeypatch):
+        from zpbs_backup.config import PBSConfig
+        from zpbs_backup.pbs import PBSClient
+
+        config = PBSConfig(
+            repository="user@realm!tokenname@server:datastore",
+            password="test-token",
+            keyfile="/path/to/key.enc" if with_encryption else None
+        )
+        client = PBSClient(config)
+
+        monkeypatch.setattr("os.environ", {"USERS_ENV_VAR1": "VALUE1", "USERS_ENV_VAR2": "VALUE2"})
+
+        with umock.patch("subprocess.run") as subprocess_run:
+            client.backup(
+                backup_id="test-backup",
+                source_path="/test/path",
+            )
+            assert subprocess_run.call_args == umock.call(
+                [
+                    "proxmox-backup-client",
+                    "backup",
+                    "root.pxar:/test/path",
+                    "--backup-id",
+                    "test-backup",
+                ] + (["--keyfile", "/path/to/key.enc"] if with_encryption else []),
+                env={
+                    "PBS_REPOSITORY": "user@realm!tokenname@server:datastore",
+                    "PBS_PASSWORD": "test-token",
+                    "USERS_ENV_VAR1": "VALUE1",
+                    "USERS_ENV_VAR2": "VALUE2",
+                },
+                capture_output=False,
+                text=True,
+                check=False,
+                timeout=None,
+            )
+
 
 class TestParseServerAddress:
     """Tests for _parse_server_address."""
@@ -188,27 +227,27 @@ class TestClockSkew:
 
     def test_skew_zero_when_server_matches_local(self):
         now = datetime.now(timezone.utc)
-        with patch.object(PBSClient, "get_server_time", return_value=now):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=now):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert abs(skew) < 1.0
 
     def test_skew_positive_when_server_ahead(self):
         future = datetime.now(timezone.utc) + timedelta(seconds=120)
-        with patch.object(PBSClient, "get_server_time", return_value=future):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=future):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert 119 < skew < 121
 
     def test_skew_negative_when_server_behind(self):
         past = datetime.now(timezone.utc) - timedelta(seconds=90)
-        with patch.object(PBSClient, "get_server_time", return_value=past):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=past):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert -91 < skew < -89
 
     def test_skew_none_when_probe_fails(self):
-        with patch.object(PBSClient, "get_server_time", return_value=None):
+        with umock.patch.object(PBSClient, "get_server_time", return_value=None):
             assert self._client().get_clock_skew_seconds() is None
 
     def test_get_server_time_returns_none_when_no_server_configured(self):
