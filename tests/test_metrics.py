@@ -127,6 +127,12 @@ class TestWriteTextfile:
         leftovers = [p.name for p in tmp_path.iterdir() if p.name != "zpbs_backup.prom"]
         assert leftovers == []
 
+    def test_file_is_world_readable(self, tmp_path):
+        write_textfile(_summary(successful=1), str(tmp_path))
+
+        mode = (tmp_path / "zpbs_backup.prom").stat().st_mode & 0o777
+        assert mode == 0o644
+
     def test_missing_dir_logs_error_and_does_not_raise(self, tmp_path, capsys):
         summary = _summary(successful=1)
         missing_dir = tmp_path / "does-not-exist"
