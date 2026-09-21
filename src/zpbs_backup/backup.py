@@ -14,7 +14,9 @@ from .pbs import PBSClient
 from .retention import DEFAULT_RETENTION, RetentionPolicy, parse_retention
 from .scheduler import format_last_backup, is_backup_due
 from .zfs import (
+    PROP_RETENTION,
     Dataset,
+    InvalidPropertyError,
     discover_datasets,
     get_latest_snapshot_creation,
     get_written_bytes,
@@ -135,6 +137,39 @@ class BackupOrchestrator:
             datasets = [ds for ds in datasets if fnmatch.fnmatch(ds.name, pattern)]
 
         return datasets
+
+    def _reject_misconfigured(
+        self, datasets: list[Dataset], summary: BackupSummary
+    ) -> list[Dataset]:
+        """Drop datasets whose zpbs properties cannot be acted on.
+
+        Each one is recorded as a failure naming the dataset and the
+        property, so it reaches the run output, syslog and the notification
+        email. The remaining datasets still run: one typo must not cost a
+        night of backups.
+
+        Args:
+            datasets: The discovered datasets
+            summary: The run summary, extended with a failure per rejection
+
+        Returns:
+            The datasets safe to proceed with
+        """
+        usable = []
+
+        for dataset in datasets:
+            errors = dataset.property_errors()
+            if not errors:
+                usable.append(dataset)
+                continue
+
+            message = "; ".join(str(e) for e in errors)
+            self._log(f"Skipping {dataset.name}: {message}")
+            summary.results.append(
+                BackupResult(dataset=dataset, success=False, error=message)
+            )
+
+        return usable
 
     def plan(self, datasets: list[Dataset]) -> list[tuple[Dataset, bool, str | None]]:
         """Plan which datasets need to be backed up.
@@ -323,6 +358,8 @@ class BackupOrchestrator:
             summary.end_time = datetime.now()
             return summary
 
+        datasets = self._reject_misconfigured(datasets, summary)
+
         self._preflight_skew_check()
 
         plan = self.plan(datasets)
@@ -362,17 +399,29 @@ class BackupOrchestrator:
 def get_retention_policy(dataset: Dataset) -> RetentionPolicy:
     """Get the retention policy for a dataset.
 
+    An unset zpbs:retention takes the built-in default. A value that is set
+    but unparseable is an error: pruning deletes snapshots, so falling back
+    to a default here would apply a policy nobody chose.
+
     Args:
         dataset: The dataset
 
     Returns:
         RetentionPolicy for this dataset
+
+    Raises:
+        InvalidPropertyError: If zpbs:retention is set but cannot be parsed
     """
     if dataset.retention:
         try:
             return parse_retention(dataset.retention)
-        except ValueError:
-            pass
+        except ValueError as e:
+            raise InvalidPropertyError(
+                dataset.name,
+                PROP_RETENTION,
+                dataset.retention,
+                f"counts with d/w/m/y suffixes such as 7d,4w,6m,1y ({e})",
+            ) from None
     return DEFAULT_RETENTION
 
 
@@ -405,7 +454,12 @@ class PruneOrchestrator:
         """
         backup_id = dataset.get_backup_id(self.hostname, self.config.backup_id_separator)
         namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
-        policy = get_retention_policy(dataset)
+
+        try:
+            policy = get_retention_policy(dataset)
+        except InvalidPropertyError as e:
+            self._log(f"Refusing to prune {dataset.name}: {e}")
+            return False
 
         self._log(f"Pruning {dataset.name} ({backup_id})")
 

@@ -7,7 +7,9 @@ import pytest
 
 from zpbs_backup import zfs as zfs_mod
 from zpbs_backup.zfs import (
+    DEFAULT_PRIORITY,
     Dataset,
+    InvalidPropertyError,
     PropertyValue,
     Schedule,
     _parse_dataset_output,
@@ -87,14 +89,20 @@ class TestDataset:
         )
         assert ds.schedule == Schedule.WEEKLY
 
-    def test_schedule_invalid_falls_back_to_default(self):
+    def test_schedule_invalid_raises_instead_of_defaulting(self):
         ds = Dataset(
             name="tank/data",
             properties={
                 PROP_SCHEDULE: PropertyValue(value="hourly", source="local"),
             },
         )
-        assert ds.schedule == Schedule.DAILY
+        with pytest.raises(InvalidPropertyError) as raised:
+            ds.schedule
+
+        message = str(raised.value)
+        assert "tank/data" in message
+        assert "zpbs:schedule" in message
+        assert "hourly" in message
 
     def test_priority_default(self):
         ds = Dataset(name="tank/data", properties={})
@@ -319,3 +327,104 @@ class TestGetLatestSnapshotCreation:
             zfs_mod, "run_zfs_command", return_value=_completed("", returncode=1)
         ):
             assert get_latest_snapshot_creation("tank/missing") is None
+
+
+class TestInvalidPropertiesFailLoudly:
+    """A zpbs property set by hand must not silently become a default."""
+
+    def _ds(self, prop, value):
+        return Dataset(
+            name="tank/data",
+            properties={
+                PROP_BACKUP: PropertyValue(value="true", source="local"),
+                prop: PropertyValue(value=value, source="local"),
+            },
+        )
+
+    def test_invalid_schedule_names_the_dataset_and_property(self):
+        with pytest.raises(InvalidPropertyError) as raised:
+            self._ds(PROP_SCHEDULE, "hourly").schedule
+
+        message = str(raised.value)
+        assert "tank/data" in message
+        assert PROP_SCHEDULE in message
+        assert "daily" in message  # names the accepted values
+
+    def test_invalid_priority_names_the_dataset_and_property(self):
+        with pytest.raises(InvalidPropertyError) as raised:
+            self._ds(PROP_PRIORITY, "high").priority
+
+        message = str(raised.value)
+        assert "tank/data" in message
+        assert PROP_PRIORITY in message
+
+    def test_out_of_range_priority_is_also_invalid(self):
+        """zpbs-backup set enforces 1-100; zfs set does not."""
+        for value in ("0", "101"):
+            with pytest.raises(InvalidPropertyError):
+                self._ds(PROP_PRIORITY, value).priority
+
+    def test_property_errors_collects_all_three(self):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_BACKUP: PropertyValue(value="true", source="local"),
+                PROP_SCHEDULE: PropertyValue(value="hourly", source="local"),
+                PROP_PRIORITY: PropertyValue(value="high", source="local"),
+                PROP_RETENTION: PropertyValue(value="7 days", source="local"),
+            },
+        )
+
+        reported = {e.prop for e in ds.property_errors()}
+        assert reported == {PROP_SCHEDULE, PROP_PRIORITY, PROP_RETENTION}
+
+    def test_property_errors_is_empty_for_a_clean_dataset(self):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_BACKUP: PropertyValue(value="true", source="local"),
+                PROP_SCHEDULE: PropertyValue(value="weekly", source="local"),
+                PROP_PRIORITY: PropertyValue(value="10", source="local"),
+                PROP_RETENTION: PropertyValue(value="7d,4w", source="local"),
+            },
+        )
+
+        assert ds.property_errors() == []
+
+    def test_unset_properties_still_take_their_defaults(self):
+        """Absent is not the same as malformed."""
+        ds = Dataset(
+            name="tank/data",
+            properties={PROP_BACKUP: PropertyValue(value="true", source="local")},
+        )
+
+        assert ds.schedule == Schedule.DAILY
+        assert ds.priority == DEFAULT_PRIORITY
+        assert ds.property_errors() == []
+
+    def test_discovery_survives_an_unreadable_priority(self):
+        """One bad value must not abort discovery for every dataset."""
+        good = Dataset(
+            name="tank/good",
+            properties={
+                PROP_BACKUP: PropertyValue(value="true", source="local"),
+                PROP_PRIORITY: PropertyValue(value="10", source="local"),
+            },
+        )
+        bad = Dataset(
+            name="tank/bad",
+            properties={
+                PROP_BACKUP: PropertyValue(value="true", source="local"),
+                PROP_PRIORITY: PropertyValue(value="high", source="local"),
+            },
+        )
+
+        with patch.object(zfs_mod, "run_zfs_command"), \
+             patch.object(
+                 zfs_mod,
+                 "_parse_dataset_output",
+                 return_value={"tank/bad": bad, "tank/good": good},
+             ):
+            discovered = zfs_mod.discover_datasets()
+
+        assert [ds.name for ds in discovered] == ["tank/good", "tank/bad"]
