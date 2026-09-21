@@ -92,7 +92,10 @@ def format_summary_for_email(summary: BackupSummary, hostname: str) -> tuple[str
         lines.append("Failed datasets:")
         for result in summary.results:
             if not result.success and not result.skipped:
-                lines.append(f"  - {result.dataset.name}: {result.error}")
+                error = result.error or "no error text reported"
+                first, *rest = error.strip().splitlines()
+                lines.append(f"  - {result.dataset.name}: {first}")
+                lines.extend(f"      {line}" for line in rest)
         lines.append("")
 
     if summary.successful > 0:
@@ -113,6 +116,24 @@ def format_summary_for_email(summary: BackupSummary, hostname: str) -> tuple[str
 
     body = "\n".join(lines)
     return subject, body
+
+
+def _syslog_error(error: str | None) -> str:
+    """Flatten a backup error into one syslog-safe line.
+
+    The client's own output is often several lines; a syslog record is one.
+    Embedded quotes would also break the error="..." field.
+
+    Args:
+        error: The error text from a BackupResult, or None
+
+    Returns:
+        A single-line, quote-free rendering
+    """
+    if not error or not error.strip():
+        return "no error text reported"
+
+    return " ".join(error.split()).replace('"', "'")
 
 
 def _send_to_syslog(summary: BackupSummary, hostname: str) -> bool:
@@ -140,7 +161,8 @@ def _send_to_syslog(summary: BackupSummary, hostname: str) -> bool:
             if not result.success and not result.skipped:
                 syslog.syslog(
                     syslog.LOG_ERR,
-                    f"backup_failed dataset={result.dataset.name} error=\"{result.error}\""
+                    f"backup_failed dataset={result.dataset.name} "
+                    f"error=\"{_syslog_error(result.error)}\""
                 )
 
         # Log successful datasets

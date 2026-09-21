@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import io
+import subprocess
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
 from zpbs_backup import backup as backup_mod
-from zpbs_backup.backup import SKEW_MARGIN_SECONDS, BackupOrchestrator
+from zpbs_backup.backup import SKEW_MARGIN_SECONDS, BackupOrchestrator, failure_message
 from zpbs_backup.config import PBSConfig
 from zpbs_backup.zfs import Dataset, PropertyValue, PROP_BACKUP
 
@@ -170,3 +172,67 @@ class TestPreflightSkewCheck:
             orch._preflight_skew_check()
         assert orch.skip_unchanged_safe is False
         assert "could not measure" in orch.output.getvalue()
+
+
+class TestFailureMessage:
+    """Tests for failure_message."""
+
+    def test_prefers_stderr(self):
+        result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="progress", stderr="  Error: auth failed\n"
+        )
+        assert failure_message(result) == "Error: auth failed"
+
+    def test_falls_back_to_stdout_when_stderr_is_none(self):
+        """Output streamed to the terminal leaves stderr None, not empty."""
+        result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="Error: unable to open chunk store", stderr=None
+        )
+        assert failure_message(result) == "Error: unable to open chunk store"
+
+    def test_reports_exit_status_when_the_client_said_nothing(self):
+        result = subprocess.CompletedProcess(args=[], returncode=7, stdout=None, stderr=None)
+        message = failure_message(result)
+        assert message.strip()
+        assert "7" in message
+
+    def test_blank_streams_are_treated_as_nothing_said(self):
+        result = subprocess.CompletedProcess(args=[], returncode=7, stdout="  \n", stderr="")
+        assert failure_message(result).strip()
+
+
+class TestBackupDatasetFailureReporting:
+    """A failed backup must surface the client's own words."""
+
+    @contextmanager
+    def _failing_orchestrator(self, stdout, stderr=None, returncode=2):
+        orch = _orch()
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+        with patch.object(orch.client, "backup", return_value=completed), \
+             patch.object(orch.client, "create_namespace", return_value=True):
+            yield orch
+
+    def test_error_is_the_client_text_not_none(self):
+        with self._failing_orchestrator("Error: unable to open chunk store") as orch:
+            result = orch.backup_dataset(_ds())
+
+        assert result.success is False
+        assert result.error == "Error: unable to open chunk store"
+        assert result.error != "None"
+
+    def test_error_reaches_the_run_output(self):
+        with self._failing_orchestrator("Error: unable to open chunk store") as orch:
+            orch.backup_dataset(_ds())
+            printed = orch.output.getvalue()
+
+        assert "FAILED: Error: unable to open chunk store" in printed
+        assert "FAILED: None" not in printed
+
+    def test_error_is_never_empty_even_with_a_silent_client(self):
+        with self._failing_orchestrator(None, returncode=9) as orch:
+            result = orch.backup_dataset(_ds())
+
+        assert result.success is False
+        assert result.error and result.error.strip()
