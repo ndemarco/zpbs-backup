@@ -9,8 +9,11 @@ Type=oneshot
 ExecStart=/usr/local/bin/zpbs-backup run
 # Load PBS credentials from file if not in environment
 EnvironmentFile=-/etc/zpbs-backup/pbs.conf
-# Prevent multiple simultaneous runs
-ExecStartPre=/bin/sh -c '! pgrep -f "zpbs-[b]ackup run" >/dev/null'
+
+# Overlapping runs are prevented by an exclusive flock the command itself
+# takes, which also covers a manual `zpbs-backup run`. 75 is what it exits
+# with when another run already holds that lock — a deferral, not a failure.
+SuccessExitStatus=75
 
 # Security hardening
 ProtectSystem=strict
@@ -21,6 +24,17 @@ NoNewPrivileges=true
 PrivateNetwork=false
 # Need access to ZFS commands
 ReadWritePaths=/dev/zfs
+
+# /var/lib/zpbs-backup, created with the right ownership and writable despite
+# ProtectSystem=strict. Holds the last-success state file and the run lock.
+StateDirectory=zpbs-backup
+StateDirectoryMode=0750
+
+# node_exporter's default textfile collector directory, so ZPBS_TEXTFILE_DIR
+# works on a stock install. The leading "-" keeps a host without
+# node_exporter from failing to start. A collector directory elsewhere needs
+# a drop-in adding that path here.
+ReadWritePaths=-/var/lib/node_exporter/textfile_collector
 
 [Install]
 WantedBy=multi-user.target

@@ -25,6 +25,7 @@ from .config import (
     load_config,
     mask_secret,
 )
+from .lock import EXIT_ALREADY_RUNNING, AlreadyRunning, run_lock
 from .metrics import report_metrics
 from .notify import format_summary_for_email, get_notification_config, send_notification
 from .pbs import PBSClient
@@ -245,7 +246,20 @@ def run(
         change_detection_mode=change_detection_mode,
     )
 
-    summary = orchestrator.run(pattern)
+    if dry_run:
+        # A dry run writes nothing, so making it contend for the lock would
+        # only block a real run.
+        summary = orchestrator.run(pattern)
+    else:
+        try:
+            with run_lock():
+                summary = orchestrator.run(pattern)
+        except AlreadyRunning as e:
+            click.echo(f"Not starting: {e}", err=True)
+            sys.exit(EXIT_ALREADY_RUNNING)
+        except OSError as e:
+            click.echo(f"Error: cannot take the run lock: {e}", err=True)
+            sys.exit(1)
 
     if not dry_run:
         # Metrics are independent of notifications: --no-notify silences
