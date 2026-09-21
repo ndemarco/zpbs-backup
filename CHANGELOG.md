@@ -31,13 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--force` continues to back up everything regardless of either check.
 - The skew check is one HTTPS HEAD per run; not user-configurable.
 
-## [0.6.0] - 2026-02-17
+## [0.7.0] - 2026-05-14
 
 ### Added
+- `--change-detection-mode` option on `run`, passed through to `proxmox-backup-client`: `legacy` (full content read and hash comparison), `data` (content-based), or `metadata` (inode/mtime-based, fastest on large datasets). Unset leaves the client's own default in place.
 - Prometheus Pushgateway integration: push 6 metrics after each backup run (last run timestamp, last success timestamp, duration, successful/failed/skipped dataset counts)
 - `ZPBS_PUSHGATEWAY` environment variable: set to Pushgateway base URL to enable metrics; unset or empty disables (no-op)
 - State persistence at `/var/lib/zpbs-backup/state.json`: `last_success_timestamp_seconds` survives failed runs so the staleness alert reflects the true last success
 - `ZPBS_PUSHGATEWAY` added to diagnostic env-var display list
+- GitHub Actions release workflow: a `v*` tag builds the wheel and the `.deb`/`.rpm` packages and publishes them as release assets.
+
+### Notes
+- The metrics and state-persistence work above was written against a `0.6.0` version bump that was never tagged or released. It first reached users here, in 0.7.0. No 0.6.0 release exists; a package reporting that version was built by hand from an untagged commit.
 
 ## [0.5.2] - 2026-02-12
 
