@@ -81,15 +81,23 @@ def status(orphans: bool, json_output: bool) -> None:
             namespace = ds.namespace or ds.get_auto_namespace(hostname)
             last_backup = client.get_last_backup_time(backup_id, namespace) if ds.backup_enabled else None
 
+            errors = ds.property_errors()
+            readable = not errors
+
             output_data.append({
                 "dataset": ds.name,
                 "backup_enabled": ds.backup_enabled,
-                "schedule": ds.schedule.value,
-                "priority": ds.priority,
+                "schedule": ds.schedule.value if readable else None,
+                "priority": ds.priority if readable else None,
                 "retention": ds.retention,
                 "namespace": namespace if ds.backup_enabled else None,
                 "last_backup": last_backup.isoformat() if last_backup else None,
-                "backup_due": is_backup_due(ds.schedule, last_backup) if ds.backup_enabled else None,
+                "backup_due": (
+                    is_backup_due(ds.schedule, last_backup)
+                    if ds.backup_enabled and readable
+                    else None
+                ),
+                "property_errors": [str(e) for e in errors],
             })
 
         click.echo(json.dumps(output_data, indent=2))
@@ -110,12 +118,21 @@ def status(orphans: bool, json_output: bool) -> None:
     click.echo(f"{'DATASET':<{name_width}}  BACKUP  SCHEDULE  PRIORITY  LAST BACKUP     STATUS")
     click.echo("-" * (name_width + 60))
 
+    property_errors = []
+
     for ds in datasets:
         backup = "yes" if ds.backup_enabled else "no"
-        schedule = ds.schedule.value if ds.backup_enabled else "-"
-        priority = str(ds.priority) if ds.backup_enabled else "-"
+        errors = ds.property_errors()
+        property_errors.extend(errors)
 
-        if ds.backup_enabled:
+        if errors:
+            schedule = "invalid"
+            priority = "invalid"
+            last_str = "-"
+            status_str = "misconfigured"
+        elif ds.backup_enabled:
+            schedule = ds.schedule.value
+            priority = str(ds.priority)
             backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
             namespace = ds.namespace or ds.get_auto_namespace(hostname)
             last_backup = client.get_last_backup_time(backup_id, namespace)
@@ -127,6 +144,8 @@ def status(orphans: bool, json_output: bool) -> None:
                 until = time_until_due(ds.schedule, last_backup)
                 status_str = f"in {format_time_delta(until)}"
         else:
+            schedule = "-"
+            priority = "-"
             last_str = "-"
             status_str = "disabled"
 
@@ -134,6 +153,12 @@ def status(orphans: bool, json_output: bool) -> None:
             f"{ds.name:<{name_width}}  {backup:<6}  {schedule:<8}  {priority:<8}  "
             f"{last_str:<14}  {status_str}"
         )
+
+    if property_errors:
+        click.echo("")
+        click.echo("Invalid properties:")
+        for error in property_errors:
+            click.echo(f"  {error}")
 
     if orphans:
         click.echo("")

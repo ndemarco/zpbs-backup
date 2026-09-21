@@ -30,9 +30,29 @@ ALL_PROPERTIES = [
     PROP_PRIORITY,
 ]
 
-# Default values
+# Default values — these apply when a property is UNSET. A property that is
+# set but unreadable is an error, never a default: `zpbs-backup set` validates
+# its input, but `zfs set` writes whatever it is given, and silently standing
+# in a default for a typo means backing up or pruning to a policy nobody chose.
 DEFAULT_SCHEDULE = Schedule.DAILY
 DEFAULT_PRIORITY = 50
+
+PRIORITY_MIN = 1
+PRIORITY_MAX = 100
+
+
+class InvalidPropertyError(ValueError):
+    """A zpbs property is set to a value zpbs-backup cannot act on."""
+
+    def __init__(self, dataset: str, prop: str, value: str, expected: str):
+        self.dataset = dataset
+        self.prop = prop
+        self.value = value
+        self.expected = expected
+        super().__init__(
+            f"{dataset}: {prop}={value!r} is not valid — expected {expected}. "
+            f"Set it with: zpbs-backup set {prop.removeprefix('zpbs:')}=<value> {dataset}"
+        )
 
 
 @dataclass
@@ -76,13 +96,22 @@ class Dataset:
 
     @property
     def schedule(self) -> Schedule:
-        """Return the backup schedule for this dataset."""
+        """Return the backup schedule for this dataset.
+
+        Raises:
+            InvalidPropertyError: If zpbs:schedule is set to an unknown value
+        """
         prop = self.properties.get(PROP_SCHEDULE)
         if prop and prop.is_set:
             try:
                 return Schedule(prop.value)
             except ValueError:
-                pass
+                raise InvalidPropertyError(
+                    self.name,
+                    PROP_SCHEDULE,
+                    prop.value,
+                    "one of " + ", ".join(s.value for s in Schedule),
+                ) from None
         return DEFAULT_SCHEDULE
 
     @property
@@ -103,14 +132,60 @@ class Dataset:
 
     @property
     def priority(self) -> int:
-        """Return the backup priority (lower = first)."""
+        """Return the backup priority (lower = first).
+
+        Raises:
+            InvalidPropertyError: If zpbs:priority is set to something other
+                than an integer in the accepted range
+        """
         prop = self.properties.get(PROP_PRIORITY)
         if prop and prop.is_set:
+            expected = f"an integer between {PRIORITY_MIN} and {PRIORITY_MAX}"
             try:
-                return int(prop.value)
+                priority = int(prop.value)
             except ValueError:
-                pass
+                raise InvalidPropertyError(
+                    self.name, PROP_PRIORITY, prop.value, expected
+                ) from None
+
+            if not PRIORITY_MIN <= priority <= PRIORITY_MAX:
+                raise InvalidPropertyError(
+                    self.name, PROP_PRIORITY, prop.value, expected
+                )
+
+            return priority
         return DEFAULT_PRIORITY
+
+    def property_errors(self) -> list[InvalidPropertyError]:
+        """Return every zpbs property on this dataset that cannot be acted on.
+
+        Lets a caller report and exclude one misconfigured dataset without
+        one bad value aborting the whole run.
+        """
+        from .retention import parse_retention
+
+        errors: list[InvalidPropertyError] = []
+
+        for accessor in (lambda: self.schedule, lambda: self.priority):
+            try:
+                accessor()
+            except InvalidPropertyError as e:
+                errors.append(e)
+
+        if self.retention:
+            try:
+                parse_retention(self.retention)
+            except ValueError as e:
+                errors.append(
+                    InvalidPropertyError(
+                        self.name,
+                        PROP_RETENTION,
+                        self.retention,
+                        f"counts with d/w/m/y suffixes such as 7d,4w,6m,1y ({e})",
+                    )
+                )
+
+        return errors
 
     @property
     def pool(self) -> str:
@@ -203,11 +278,22 @@ def discover_datasets() -> list[Dataset]:
 
     datasets = _parse_dataset_output(result.stdout)
 
-    # Filter to datasets with backup enabled and sort by priority
+    # Filter to datasets with backup enabled and sort by priority. An
+    # unreadable priority must not abort discovery: the orchestrators report
+    # and exclude such a dataset, and `zpbs-backup status` displays the bad
+    # value. Ordering it last keeps it out of the way until then.
     enabled = [ds for ds in datasets.values() if ds.backup_enabled]
-    enabled.sort(key=lambda ds: (ds.priority, ds.name))
+    enabled.sort(key=_priority_sort_key)
 
     return enabled
+
+
+def _priority_sort_key(dataset: Dataset) -> tuple[int, str]:
+    """Sort key that tolerates an unreadable zpbs:priority."""
+    try:
+        return (dataset.priority, dataset.name)
+    except InvalidPropertyError:
+        return (PRIORITY_MAX + 1, dataset.name)
 
 
 def get_all_datasets() -> list[Dataset]:

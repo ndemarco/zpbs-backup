@@ -11,9 +11,24 @@ from unittest.mock import patch
 import pytest
 
 from zpbs_backup import backup as backup_mod
-from zpbs_backup.backup import SKEW_MARGIN_SECONDS, BackupOrchestrator, failure_message
+from zpbs_backup.backup import (
+    SKEW_MARGIN_SECONDS,
+    BackupOrchestrator,
+    PruneOrchestrator,
+    failure_message,
+    get_retention_policy,
+)
 from zpbs_backup.config import PBSConfig
-from zpbs_backup.zfs import Dataset, PropertyValue, PROP_BACKUP
+from zpbs_backup.retention import DEFAULT_RETENTION
+from zpbs_backup.zfs import (
+    Dataset,
+    InvalidPropertyError,
+    PropertyValue,
+    PROP_BACKUP,
+    PROP_PRIORITY,
+    PROP_RETENTION,
+    PROP_SCHEDULE,
+)
 
 
 def _ds(name: str = "tank/data") -> Dataset:
@@ -236,3 +251,98 @@ class TestBackupDatasetFailureReporting:
 
         assert result.success is False
         assert result.error and result.error.strip()
+
+
+def _ds_with(prop: str, value: str, name: str = "tank/data") -> Dataset:
+    return Dataset(
+        name=name,
+        properties={
+            PROP_BACKUP: PropertyValue(value="true", source="local"),
+            prop: PropertyValue(value=value, source="local"),
+        },
+        mountpoint=f"/{name}",
+        mounted=True,
+    )
+
+
+class TestMisconfiguredDatasetsFailLoudly:
+    """A malformed zpbs property is reported, never quietly defaulted."""
+
+    def _run_with(self, datasets):
+        orch = _orch()
+        with patch.object(backup_mod, "discover_datasets", return_value=datasets), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(orch.client, "get_last_backup_time", return_value=None), \
+             patch.object(orch.client, "create_namespace", return_value=True), \
+             patch.object(orch.client, "backup") as client_backup:
+            client_backup.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
+            summary = orch.run()
+        return orch, summary, client_backup
+
+    @pytest.mark.parametrize(
+        "prop,value",
+        [
+            (PROP_SCHEDULE, "hourly"),
+            (PROP_PRIORITY, "high"),
+            (PROP_RETENTION, "7 days"),
+        ],
+    )
+    def test_invalid_property_is_a_failure_naming_dataset_and_property(self, prop, value):
+        orch, summary, client_backup = self._run_with([_ds_with(prop, value)])
+
+        assert summary.failed == 1
+        assert summary.successful == 0
+        client_backup.assert_not_called()
+
+        error = summary.results[0].error
+        assert error and "tank/data" in error and prop in error
+        assert "tank/data" in orch.output.getvalue()
+
+    def test_one_bad_dataset_does_not_stop_the_others(self):
+        good = _ds_with(PROP_SCHEDULE, "weekly", name="tank/good")
+        bad = _ds_with(PROP_SCHEDULE, "hourly", name="tank/bad")
+
+        _orch_used, summary, client_backup = self._run_with([bad, good])
+
+        assert summary.failed == 1
+        assert summary.successful == 1
+        assert client_backup.call_count == 1
+
+    def test_a_clean_dataset_is_untouched_by_the_check(self):
+        _orch_used, summary, client_backup = self._run_with(
+            [_ds_with(PROP_RETENTION, "7d,4w")]
+        )
+
+        assert summary.failed == 0
+        assert client_backup.call_count == 1
+
+
+class TestRetentionPolicyResolution:
+    """Tests for get_retention_policy."""
+
+    def test_unset_retention_takes_the_default(self):
+        ds = Dataset(name="tank/data", properties={})
+        assert get_retention_policy(ds) is DEFAULT_RETENTION
+
+    def test_invalid_retention_raises_rather_than_defaulting(self):
+        with pytest.raises(InvalidPropertyError) as raised:
+            get_retention_policy(_ds_with(PROP_RETENTION, "7 days"))
+
+        message = str(raised.value)
+        assert "tank/data" in message
+        assert PROP_RETENTION in message
+
+    def test_prune_refuses_a_dataset_with_invalid_retention(self):
+        """Pruning against a default policy would delete to a policy nobody set."""
+        pruner = PruneOrchestrator(
+            config=PBSConfig(repository="u@p!t@srv:store", server="srv"),
+            output=io.StringIO(),
+        )
+
+        with patch.object(pruner.client, "prune") as prune_call:
+            assert pruner.prune_dataset(_ds_with(PROP_RETENTION, "7 days")) is False
+
+        prune_call.assert_not_called()
+        assert "Refusing to prune tank/data" in pruner.output.getvalue()
