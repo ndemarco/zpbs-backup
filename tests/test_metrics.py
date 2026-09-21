@@ -11,7 +11,13 @@ import pytest
 
 from zpbs_backup import metrics as metrics_mod
 from zpbs_backup.backup import SkipCause
-from zpbs_backup.metrics import push_to_gateway, write_textfile
+from zpbs_backup.metrics import (
+    MetricsConfig,
+    get_metrics_config,
+    push_to_gateway,
+    report_metrics,
+    write_textfile,
+)
 
 METRIC_NAMES = (
     "zpbs_backup_last_run_timestamp_seconds",
@@ -158,4 +164,57 @@ class TestWriteTextfile:
             write_textfile(summary, str(tmp_path))
 
         assert "zpbs-backup metrics: textfile write failed" in capsys.readouterr().err
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestMetricsConfig:
+    """Tests for get_metrics_config."""
+
+    def test_both_transports_default_to_unset(self, monkeypatch):
+        monkeypatch.delenv("ZPBS_PUSHGATEWAY", raising=False)
+        monkeypatch.delenv("ZPBS_TEXTFILE_DIR", raising=False)
+
+        config = get_metrics_config()
+
+        assert config.pushgateway_url is None
+        assert config.textfile_dir is None
+
+    def test_reads_both_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("ZPBS_PUSHGATEWAY", "http://10.0.16.16:9091")
+        monkeypatch.setenv("ZPBS_TEXTFILE_DIR", "/var/lib/node_exporter/textfile_collector")
+
+        config = get_metrics_config()
+
+        assert config.pushgateway_url == "http://10.0.16.16:9091"
+        assert config.textfile_dir == "/var/lib/node_exporter/textfile_collector"
+
+    def test_empty_string_counts_as_unset(self, monkeypatch):
+        """An exported-but-blank variable must not be treated as a URL."""
+        monkeypatch.setenv("ZPBS_PUSHGATEWAY", "")
+        monkeypatch.setenv("ZPBS_TEXTFILE_DIR", "")
+
+        config = get_metrics_config()
+
+        assert config.pushgateway_url is None
+        assert config.textfile_dir is None
+
+
+class TestReportMetrics:
+    """Tests for report_metrics."""
+
+    def test_drives_both_transports(self, tmp_path):
+        summary = _summary(successful=1)
+        config = MetricsConfig(
+            pushgateway_url="http://10.0.16.16:9091", textfile_dir=str(tmp_path)
+        )
+
+        with mock.patch.object(metrics_mod, "push_to_gateway") as push:
+            report_metrics(summary, "storage-server", config)
+
+        push.assert_called_once_with(summary, "storage-server", config.pushgateway_url)
+        assert (tmp_path / "zpbs_backup.prom").exists()
+
+    def test_is_a_noop_when_nothing_is_configured(self, tmp_path):
+        report_metrics(_summary(successful=1), "storage-server", MetricsConfig())
+
         assert list(tmp_path.iterdir()) == []

@@ -25,6 +25,7 @@ from .config import (
     load_config,
     mask_secret,
 )
+from .metrics import report_metrics
 from .notify import format_summary_for_email, get_notification_config, send_notification
 from .pbs import PBSClient
 from .scheduler import format_last_backup, format_time_delta, is_backup_due, time_until_due
@@ -246,9 +247,13 @@ def run(
 
     summary = orchestrator.run(pattern)
 
-    # Send notification
-    if not no_notify and not dry_run:
-        send_notification(summary, hostname)
+    if not dry_run:
+        # Metrics are independent of notifications: --no-notify silences
+        # email, not Prometheus.
+        report_metrics(summary, hostname)
+
+        if not no_notify:
+            send_notification(summary, hostname)
 
     # Exit with error if any failures
     if summary.failed > 0:
