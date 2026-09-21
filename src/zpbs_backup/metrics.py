@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,56 @@ if TYPE_CHECKING:
     from .backup import BackupSummary
 
 STATE_FILE = Path("/var/lib/zpbs-backup/state.json")
+
+
+@dataclass
+class MetricsConfig:
+    """Where run metrics are reported, if anywhere.
+
+    Kept separate from NotificationConfig on purpose: metrics and email are
+    independent knobs, and they were not once, which meant ZPBS_NOTIFY=false
+    silently turned off Prometheus reporting too.
+    """
+
+    # Prometheus Pushgateway base URL (e.g. http://10.0.16.16:9091)
+    pushgateway_url: str | None = None
+    # node_exporter textfile collector directory
+    # (e.g. /var/lib/node_exporter/textfile_collector)
+    textfile_dir: str | None = None
+
+
+def get_metrics_config() -> MetricsConfig:
+    """Load metrics configuration from the environment.
+
+    Both transports are unset by default, making metrics reporting a no-op.
+    """
+    return MetricsConfig(
+        pushgateway_url=os.environ.get("ZPBS_PUSHGATEWAY") or None,
+        textfile_dir=os.environ.get("ZPBS_TEXTFILE_DIR") or None,
+    )
+
+
+def report_metrics(
+    summary: BackupSummary,
+    hostname: str,
+    config: MetricsConfig | None = None,
+) -> None:
+    """Report run metrics through every configured transport.
+
+    Best-effort throughout: a metrics failure logs and never raises, because
+    it must not fail a backup run that otherwise succeeded.
+
+    Args:
+        summary: Completed backup summary.
+        hostname: Instance label value (short hostname).
+        config: Optional metrics config (loaded from the environment if not
+            provided).
+    """
+    if config is None:
+        config = get_metrics_config()
+
+    push_to_gateway(summary, hostname, config.pushgateway_url)
+    write_textfile(summary, config.textfile_dir)
 
 
 def _read_last_success() -> float | None:

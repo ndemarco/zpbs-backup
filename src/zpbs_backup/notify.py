@@ -22,10 +22,6 @@ class NotificationConfig:
     external_script: str | None = None
     # Syslog notification (for centralized logging)
     syslog_enabled: bool = True
-    # Prometheus Pushgateway base URL (e.g. http://10.0.16.16:9091)
-    pushgateway_url: str | None = None
-    # node_exporter textfile collector directory (e.g. /var/lib/node_exporter/textfile_collector)
-    textfile_dir: str | None = None
 
 
 def get_notification_config() -> NotificationConfig:
@@ -36,8 +32,6 @@ def get_notification_config() -> NotificationConfig:
     enabled = os.environ.get("ZPBS_NOTIFY", "true").lower() == "true"
     recipient = os.environ.get("ZPBS_NOTIFY_EMAIL")
     syslog_enabled = os.environ.get("ZPBS_SYSLOG", "true").lower() == "true"
-    pushgateway_url = os.environ.get("ZPBS_PUSHGATEWAY") or None
-    textfile_dir = os.environ.get("ZPBS_TEXTFILE_DIR") or None
 
     # Check for external notification script
     external_script = None
@@ -55,8 +49,6 @@ def get_notification_config() -> NotificationConfig:
         recipient=recipient,
         external_script=external_script,
         syslog_enabled=syslog_enabled,
-        pushgateway_url=pushgateway_url,
-        textfile_dir=textfile_dir,
     )
 
 
@@ -187,6 +179,10 @@ def send_notification(
 ) -> bool:
     """Send a notification about the backup result.
 
+    Metrics are NOT reported from here — see metrics.report_metrics. The two
+    are independent knobs, and emitting metrics as a side effect of sending
+    email meant ZPBS_NOTIFY=false silently blinded Prometheus.
+
     Args:
         summary: The backup summary
         hostname: The hostname
@@ -206,11 +202,6 @@ def send_notification(
     # Always send to syslog if enabled (for centralized logging)
     if config.syslog_enabled:
         _send_to_syslog(summary, hostname)
-
-    # Report metrics via Pushgateway and/or node_exporter textfile (best-effort, never raises)
-    from .metrics import push_to_gateway, write_textfile
-    push_to_gateway(summary, hostname, config.pushgateway_url)
-    write_textfile(summary, config.textfile_dir)
 
     subject, body = format_summary_for_email(summary, hostname)
 

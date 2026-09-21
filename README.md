@@ -449,6 +449,10 @@ can be reported two ways, either or both:
 Both are unset by default (no-op). If neither is set, no metrics are
 reported.
 
+Metrics and notifications are independent. `ZPBS_NOTIFY=false` and
+`zpbs-backup run --no-notify` silence email only; metrics are still
+reported. Likewise, reporting no metrics does not affect email.
+
 ### Series
 
 | Metric | Type | Meaning |
