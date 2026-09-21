@@ -1,6 +1,6 @@
 """Tests for schedule evaluation."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -23,9 +23,9 @@ class TestIsBackupDue:
         assert is_backup_due(Schedule.MONTHLY, None)
 
     def test_daily_just_backed_up(self):
-        """Dataset backed up just now is not due."""
-        now = datetime.now()
-        last_backup = now - timedelta(hours=1)
+        """Dataset backed up earlier the same day is not due."""
+        now = datetime(2026, 3, 10, 14, 0)
+        last_backup = datetime(2026, 3, 10, 2, 5)
         assert not is_backup_due(Schedule.DAILY, last_backup, now=now)
 
     def test_daily_overdue(self):
@@ -38,6 +38,44 @@ class TestIsBackupDue:
         """Dataset backed up exactly 24 hours ago is due."""
         now = datetime.now()
         last_backup = now - timedelta(hours=24)
+        assert is_backup_due(Schedule.DAILY, last_backup, now=now)
+
+    def test_daily_due_after_long_previous_run(self):
+        """A run that stamped a dataset after midnight is still due next night.
+
+        The timer starts at 02:00 with a randomized delay. A run lasting over
+        an hour stamps its later datasets at 03:20; the next night's start at
+        02:05 is under 24 hours later, which a fixed interval would treat as
+        not due, dropping the dataset every other night.
+        """
+        last_backup = datetime(2026, 3, 10, 3, 20)
+        now = datetime(2026, 3, 11, 2, 5)
+        assert is_backup_due(Schedule.DAILY, last_backup, now=now)
+
+    def test_daily_due_after_very_long_previous_run(self):
+        """Drift larger than any fixed slack window still comes out due."""
+        last_backup = datetime(2026, 3, 10, 9, 45)
+        now = datetime(2026, 3, 11, 2, 5)
+        assert is_backup_due(Schedule.DAILY, last_backup, now=now)
+
+    def test_daily_due_at_midnight_boundary(self):
+        """Due exactly at the start of the calendar day after the last backup."""
+        last_backup = datetime(2026, 3, 10, 3, 20)
+        assert is_backup_due(Schedule.DAILY, last_backup, now=datetime(2026, 3, 11, 0, 0))
+        assert not is_backup_due(
+            Schedule.DAILY, last_backup, now=datetime(2026, 3, 10, 23, 59, 59)
+        )
+
+    def test_daily_due_across_month_boundary(self):
+        """Calendar-day arithmetic rolls over month ends."""
+        last_backup = datetime(2026, 3, 31, 3, 20)
+        now = datetime(2026, 4, 1, 2, 5)
+        assert is_backup_due(Schedule.DAILY, last_backup, now=now)
+
+    def test_daily_aware_timestamps_are_not_mixed_with_naive(self):
+        """An aware last_backup yields an aware due time, so no TypeError."""
+        last_backup = datetime(2026, 3, 10, 3, 20, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 11, 2, 5, tzinfo=timezone.utc)
         assert is_backup_due(Schedule.DAILY, last_backup, now=now)
 
     def test_weekly_not_due(self):
@@ -79,13 +117,18 @@ class TestTimeUntilDue:
         assert time_until_due(Schedule.DAILY, last_backup, now=now) is None
 
     def test_not_yet_due(self):
-        """Returns time remaining until due."""
-        now = datetime.now()
-        last_backup = now - timedelta(hours=12)
+        """Daily counts down to midnight, not to a 24-hour anniversary."""
+        last_backup = datetime(2026, 3, 10, 2, 5)
+        now = datetime(2026, 3, 10, 14, 0)
         remaining = time_until_due(Schedule.DAILY, last_backup, now=now)
-        assert remaining is not None
-        # Should be approximately 12 hours remaining
-        assert timedelta(hours=11) < remaining < timedelta(hours=13)
+        assert remaining == timedelta(hours=10)
+
+    def test_weekly_not_yet_due_uses_interval(self):
+        """Weekly still counts down a fixed seven-day interval."""
+        last_backup = datetime(2026, 3, 10, 2, 5)
+        now = datetime(2026, 3, 14, 2, 5)
+        remaining = time_until_due(Schedule.WEEKLY, last_backup, now=now)
+        assert remaining == timedelta(days=3)
 
 
 class TestFormatTimeDelta:
