@@ -37,10 +37,14 @@ def _write_last_success(ts: float) -> None:
 
 
 def _render_metrics(summary: BackupSummary) -> bytes:
-    """Render the six zpbs_backup metrics in Prometheus text exposition format.
+    """Render the zpbs_backup metrics in Prometheus text exposition format.
 
     Shared by both the Pushgateway and textfile transports so their output
     (metric names, help/type lines, values) is identical.
+
+    zpbs_backup_datasets_skipped stays an unlabelled total so existing
+    queries and alert rules keep working; the per-cause breakdown is a
+    separate series rather than a label added to that name.
     """
     run_end_ts = time.time()
 
@@ -75,8 +79,16 @@ def _render_metrics(summary: BackupSummary) -> bytes:
         "# HELP zpbs_backup_datasets_skipped Number of datasets skipped",
         "# TYPE zpbs_backup_datasets_skipped gauge",
         f"zpbs_backup_datasets_skipped {summary.skipped}",
-        "",
+        "# HELP zpbs_backup_datasets_skipped_by_cause Number of datasets skipped, by cause",
+        "# TYPE zpbs_backup_datasets_skipped_by_cause gauge",
     ]
+
+    for cause, count in summary.skipped_by_cause.items():
+        lines.append(
+            f'zpbs_backup_datasets_skipped_by_cause{{cause="{cause.value}"}} {count}'
+        )
+
+    lines.append("")
     return "\n".join(lines).encode("utf-8")
 
 

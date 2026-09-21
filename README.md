@@ -436,8 +436,8 @@ export ZPBS_NOTIFY=false             # Disable notifications globally
 ## Metrics
 
 Run metrics (last run timestamp, last success timestamp, duration, and
-successful/failed/skipped dataset counts) can be reported two ways, either or
-both:
+successful/failed/skipped dataset counts, with skips broken down by cause)
+can be reported two ways, either or both:
 
 - Environment: `ZPBS_PUSHGATEWAY=http://10.0.16.16:9091` — push to a
   Prometheus Pushgateway after each run.
@@ -448,6 +448,38 @@ both:
 
 Both are unset by default (no-op). If neither is set, no metrics are
 reported.
+
+### Series
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `zpbs_backup_last_run_timestamp_seconds` | gauge | When the most recent run ended |
+| `zpbs_backup_last_success_timestamp_seconds` | gauge | When the last fully successful run ended |
+| `zpbs_backup_duration_seconds` | gauge | How long the run took |
+| `zpbs_backup_datasets_successful` | gauge | Datasets backed up |
+| `zpbs_backup_datasets_failed` | gauge | Datasets that failed |
+| `zpbs_backup_datasets_skipped` | gauge | Datasets skipped, all causes |
+| `zpbs_backup_datasets_skipped_by_cause{cause="…"}` | gauge | Datasets skipped, split by cause |
+
+`zpbs_backup_datasets_skipped` counts every skip together, which cannot tell
+a dataset that merely is not due yet from one that has silently lost its
+mountpoint. `zpbs_backup_datasets_skipped_by_cause` splits that total four
+ways, and the two always agree:
+
+| `cause` | Meaning |
+| --- | --- |
+| `not_due` | The schedule says it is not time yet |
+| `unchanged` | Provably identical to the last backup (`written=0`) |
+| `no_mountpoint` | `mountpoint` is `none`, `legacy` or unset |
+| `not_mounted` | Not mounted, including `canmount=off` |
+
+All four label values are emitted on every run, reporting zero when no
+dataset had that cause. A series that disappeared at zero would go stale in
+Prometheus rather than read zero, which is the opposite of what an alert on
+it needs.
+
+`zpbs_backup_datasets_skipped` keeps its existing unlabelled form, so queries
+and alert rules written against it are unaffected.
 
 ## Development
 

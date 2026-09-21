@@ -14,7 +14,11 @@ from zpbs_backup import backup as backup_mod
 from zpbs_backup.backup import (
     SKEW_MARGIN_SECONDS,
     BackupOrchestrator,
+    BackupResult,
+    BackupSummary,
+    PlannedDataset,
     PruneOrchestrator,
+    SkipCause,
     failure_message,
     get_retention_policy,
 )
@@ -119,7 +123,7 @@ class TestPlanScheduleCheck:
             plan = orch.plan([ds])
         is_due.assert_not_called()
         last_backup.assert_not_called()
-        assert plan == [(ds, True, None)]
+        assert plan == [PlannedDataset(ds, True)]
 
     def test_daily_dataset_stamped_after_midnight_is_planned_next_day(self):
         """A dataset a long run stamped at 03:20 is planned the following day."""
@@ -130,7 +134,7 @@ class TestPlanScheduleCheck:
              patch.object(backup_mod, "get_written_bytes", return_value=12345), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
             plan = orch.plan([ds])
-        assert plan == [(ds, True, None)]
+        assert plan == [PlannedDataset(ds, True)]
 
     def test_daily_dataset_already_backed_up_today_is_skipped(self):
         """A dataset backed up earlier the same day is not due again."""
@@ -139,10 +143,11 @@ class TestPlanScheduleCheck:
         with patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
             plan = orch.plan([ds])
         assert len(plan) == 1
-        planned_ds, should_backup, reason = plan[0]
-        assert planned_ds is ds
-        assert should_backup is False
-        assert reason is not None and "not due" in reason
+        planned = plan[0]
+        assert planned.dataset is ds
+        assert planned.should_backup is False
+        assert planned.skip_reason is not None and "not due" in planned.skip_reason
+        assert planned.skip_cause is SkipCause.NOT_DUE
 
 
 class TestPreflightSkewCheck:
@@ -346,3 +351,118 @@ class TestRetentionPolicyResolution:
 
         prune_call.assert_not_called()
         assert "Refusing to prune tank/data" in pruner.output.getvalue()
+
+
+class TestSkipCauseAttribution:
+    """Each skip route must record which of the four causes applied."""
+
+    def test_not_due_is_attributed(self):
+        orch = _orch()
+        ds = _ds()
+        with patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+            plan = orch.plan([ds])
+
+        assert plan[0].skip_cause is SkipCause.NOT_DUE
+
+    def test_provably_unchanged_is_attributed(self):
+        orch = _orch()
+        ds = _ds()
+        stale = datetime.now() - timedelta(days=2)
+        snap_creation = int(stale.timestamp()) - SKEW_MARGIN_SECONDS - 1
+
+        with patch.object(orch.client, "get_last_backup_time", return_value=stale), \
+             patch.object(backup_mod, "get_written_bytes", return_value=0), \
+             patch.object(
+                 backup_mod, "get_latest_snapshot_creation", return_value=snap_creation
+             ):
+            plan = orch.plan([ds])
+
+        assert plan[0].skip_cause is SkipCause.UNCHANGED
+
+    def test_no_mountpoint_is_attributed(self):
+        orch = _orch()
+        ds = Dataset(
+            name="tank/data",
+            properties={PROP_BACKUP: PropertyValue(value="true", source="local")},
+            mountpoint=None,
+            mounted=True,
+        )
+
+        result = orch.backup_dataset(ds)
+
+        assert result.skipped is True
+        assert result.skip_cause is SkipCause.NO_MOUNTPOINT
+
+    def test_not_mounted_is_attributed(self):
+        orch = _orch()
+        ds = Dataset(
+            name="tank/data",
+            properties={PROP_BACKUP: PropertyValue(value="true", source="local")},
+            mountpoint="/tank/data",
+            mounted=False,
+        )
+
+        result = orch.backup_dataset(ds)
+
+        assert result.skipped is True
+        assert result.skip_cause is SkipCause.NOT_MOUNTED
+
+    def test_canmount_off_is_the_same_cause_as_not_mounted(self):
+        orch = _orch()
+        ds = Dataset(
+            name="tank/data",
+            properties={PROP_BACKUP: PropertyValue(value="true", source="local")},
+            mountpoint="/tank/data",
+            mounted=False,
+            canmount=False,
+        )
+
+        result = orch.backup_dataset(ds)
+
+        assert result.skip_cause is SkipCause.NOT_MOUNTED
+        assert "canmount=off" in result.skip_reason
+
+
+class TestSkippedByCause:
+    """Tests for BackupSummary.skipped_by_cause."""
+
+    def _summary(self, causes):
+        summary = BackupSummary()
+        for cause in causes:
+            summary.results.append(
+                BackupResult(dataset=_ds(), success=True, skipped=True, skip_cause=cause)
+            )
+        return summary
+
+    def test_every_cause_is_reported_even_at_zero(self):
+        """A series that vanishes at zero goes stale in Prometheus."""
+        counts = self._summary([]).skipped_by_cause
+
+        assert set(counts) == set(SkipCause)
+        assert all(count == 0 for count in counts.values())
+
+    def test_counts_are_split_by_cause(self):
+        summary = self._summary(
+            [SkipCause.NOT_DUE, SkipCause.NOT_DUE, SkipCause.NO_MOUNTPOINT]
+        )
+
+        counts = summary.skipped_by_cause
+        assert counts[SkipCause.NOT_DUE] == 2
+        assert counts[SkipCause.NO_MOUNTPOINT] == 1
+        assert counts[SkipCause.UNCHANGED] == 0
+        assert counts[SkipCause.NOT_MOUNTED] == 0
+
+    def test_the_causes_sum_to_the_existing_skipped_total(self):
+        """The unlabelled total stays the sum, so old queries keep agreeing."""
+        summary = self._summary(
+            [SkipCause.NOT_DUE, SkipCause.UNCHANGED, SkipCause.NOT_MOUNTED]
+        )
+
+        assert sum(summary.skipped_by_cause.values()) == summary.skipped == 3
+
+    def test_a_failed_dataset_is_not_counted_as_skipped(self):
+        summary = BackupSummary()
+        summary.results.append(BackupResult(dataset=_ds(), success=False, error="boom"))
+
+        assert summary.skipped == 0
+        assert sum(summary.skipped_by_cause.values()) == 0

@@ -11,7 +11,13 @@ from datetime import datetime
 import click
 
 from . import __version__
-from .backup import BackupOrchestrator, BackupResult, BackupSummary, PruneOrchestrator
+from .backup import (
+    BackupOrchestrator,
+    BackupResult,
+    BackupSummary,
+    PruneOrchestrator,
+    SkipCause,
+)
 from .config import (
     PBSConfig,
     get_all_config_sources,
@@ -649,6 +655,7 @@ def _do_send_test_notification(show_only: bool) -> None:
             success=False,
             skipped=True,
             skip_reason="Not due yet",
+            skip_cause=SkipCause.NOT_DUE,
             duration_seconds=0.0,
         ),
     ]

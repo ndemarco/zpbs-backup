@@ -7,7 +7,8 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, TextIO
+from enum import Enum
+from typing import Callable, NamedTuple, TextIO
 
 from .config import PBSConfig, get_hostname
 from .pbs import PBSClient
@@ -48,6 +49,21 @@ def failure_message(result: subprocess.CompletedProcess) -> str:
     return f"proxmox-backup-client exited {result.returncode} with no output"
 
 
+class SkipCause(Enum):
+    """Why a dataset was not backed up on this run.
+
+    A single skipped count cannot tell a dataset that merely is not due yet
+    from one that has silently lost its mountpoint. The label value is what
+    reaches Prometheus, so it is part of the metric contract — rename one
+    and the dashboards and alert rules reading it go blind.
+    """
+
+    NOT_DUE = "not_due"
+    UNCHANGED = "unchanged"
+    NO_MOUNTPOINT = "no_mountpoint"
+    NOT_MOUNTED = "not_mounted"
+
+
 @dataclass
 class BackupResult:
     """Result of a single backup operation."""
@@ -56,8 +72,18 @@ class BackupResult:
     success: bool
     skipped: bool = False
     skip_reason: str | None = None
+    skip_cause: SkipCause | None = None
     error: str | None = None
     duration_seconds: float = 0.0
+
+
+class PlannedDataset(NamedTuple):
+    """One dataset's place in a run: back it up, or skip it and why."""
+
+    dataset: Dataset
+    should_backup: bool
+    skip_reason: str | None = None
+    skip_cause: SkipCause | None = None
 
 
 @dataclass
@@ -83,6 +109,20 @@ class BackupSummary:
     @property
     def skipped(self) -> int:
         return sum(1 for r in self.results if r.skipped)
+
+    @property
+    def skipped_by_cause(self) -> dict[SkipCause, int]:
+        """Count skipped datasets per cause, every cause always present.
+
+        Causes with no datasets still report zero: a series that vanishes
+        when its count drops to nothing goes stale in Prometheus rather
+        than reading zero, which is the opposite of what an alert needs.
+        """
+        counts = {cause: 0 for cause in SkipCause}
+        for result in self.results:
+            if result.skipped and result.skip_cause is not None:
+                counts[result.skip_cause] += 1
+        return counts
 
     @property
     def duration_seconds(self) -> float:
@@ -171,20 +211,21 @@ class BackupOrchestrator:
 
         return usable
 
-    def plan(self, datasets: list[Dataset]) -> list[tuple[Dataset, bool, str | None]]:
+    def plan(self, datasets: list[Dataset]) -> list[PlannedDataset]:
         """Plan which datasets need to be backed up.
 
         Args:
             datasets: List of datasets to consider
 
         Returns:
-            List of (dataset, should_backup, skip_reason) tuples
+            One PlannedDataset per dataset, carrying the skip cause when it
+            is not being backed up
         """
         plan = []
 
         for ds in datasets:
             if self.force:
-                plan.append((ds, True, None))
+                plan.append(PlannedDataset(ds, True))
                 continue
 
             backup_id = ds.get_backup_id(self.hostname, self.config.backup_id_separator)
@@ -193,15 +234,17 @@ class BackupOrchestrator:
 
             if not is_backup_due(ds.schedule, last_backup):
                 reason = f"not due (last: {format_last_backup(last_backup)})"
-                plan.append((ds, False, reason))
+                plan.append(PlannedDataset(ds, False, reason, SkipCause.NOT_DUE))
                 continue
 
             unchanged_reason = self._unchanged_skip_reason(ds, last_backup)
             if unchanged_reason is not None:
-                plan.append((ds, False, unchanged_reason))
+                plan.append(
+                    PlannedDataset(ds, False, unchanged_reason, SkipCause.UNCHANGED)
+                )
                 continue
 
-            plan.append((ds, True, None))
+            plan.append(PlannedDataset(ds, True))
 
         return plan
 
@@ -286,6 +329,7 @@ class BackupOrchestrator:
                 success=True,
                 skipped=True,
                 skip_reason="no mountpoint",
+                skip_cause=SkipCause.NO_MOUNTPOINT,
             )
 
         if not dataset.mounted:
@@ -298,6 +342,7 @@ class BackupOrchestrator:
                 success=True,
                 skipped=True,
                 skip_reason=reason,
+                skip_cause=SkipCause.NOT_MOUNTED,
             )
 
         if self.dry_run:
@@ -368,7 +413,7 @@ class BackupOrchestrator:
         if self.dry_run:
             self._log("[DRY-RUN MODE]")
 
-        for dataset, should_backup, skip_reason in plan:
+        for dataset, should_backup, skip_reason, skip_cause in plan:
             if not should_backup:
                 self._log(f"Skipping {dataset.name}: {skip_reason}")
                 summary.results.append(
@@ -377,6 +422,7 @@ class BackupOrchestrator:
                         success=True,
                         skipped=True,
                         skip_reason=skip_reason,
+                        skip_cause=skip_cause,
                     )
                 )
             else:

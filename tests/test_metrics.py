@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 
 from zpbs_backup import metrics as metrics_mod
+from zpbs_backup.backup import SkipCause
 from zpbs_backup.metrics import push_to_gateway, write_textfile
 
 METRIC_NAMES = (
@@ -19,16 +20,21 @@ METRIC_NAMES = (
     "zpbs_backup_datasets_successful",
     "zpbs_backup_datasets_failed",
     "zpbs_backup_datasets_skipped",
+    "zpbs_backup_datasets_skipped_by_cause",
 )
 
 
-def _summary(successful=0, failed=0, skipped=0, duration=0.0):
+def _summary(successful=0, failed=0, skipped=0, duration=0.0, skipped_by_cause=None):
     """Build a minimal stand-in for BackupSummary (metrics only reads these fields)."""
+    counts = {cause: 0 for cause in SkipCause}
+    counts.update(skipped_by_cause or {})
+
     return types.SimpleNamespace(
         successful=successful,
         failed=failed,
         skipped=skipped,
         duration_seconds=duration,
+        skipped_by_cause=counts,
     )
 
 
@@ -50,7 +56,7 @@ class TestPushToGateway:
         push_to_gateway(summary, "host1", None)
         push_to_gateway(summary, "host1", "")
 
-    def test_puts_six_metrics_to_gateway_url(self):
+    def test_puts_every_metric_to_gateway_url(self):
         summary = _summary(successful=2, failed=1, skipped=0, duration=5.0)
         captured = {}
 
@@ -96,7 +102,7 @@ class TestWriteTextfile:
         write_textfile(summary, "")
         assert list(tmp_path.iterdir()) == []
 
-    def test_writes_same_six_metrics_as_pushgateway(self, tmp_path):
+    def test_writes_the_same_metrics_as_pushgateway(self, tmp_path):
         summary = _summary(successful=3, failed=0, skipped=1, duration=12.5)
         write_textfile(summary, str(tmp_path))
 
