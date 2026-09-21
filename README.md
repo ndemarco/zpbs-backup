@@ -453,6 +453,28 @@ Metrics and notifications are independent. `ZPBS_NOTIFY=false` and
 `zpbs-backup run --no-notify` silence email only; metrics are still
 reported. Likewise, reporting no metrics does not affect email.
 
+Under the packaged systemd unit, `ProtectSystem=strict` means every writable
+path is declared explicitly. node_exporter's default collector directory,
+`/var/lib/node_exporter/textfile_collector`, is already allowed. A collector
+directory elsewhere needs a drop-in:
+
+```ini
+# /etc/systemd/system/zpbs-backup.service.d/textfile.conf
+[Service]
+ReadWritePaths=-/srv/metrics/textfile_collector
+```
+
+## Concurrent runs
+
+A run takes an exclusive lock on `/var/lib/zpbs-backup/run.lock`, covering
+both the timer and a manual `zpbs-backup run`. A second run exits
+immediately with status 75 and backs up nothing; the systemd unit treats
+that status as success, so an overlap is not reported as a failed backup.
+
+The lock is held by the process, not the file, so it is released even if the
+holder is killed outright, and a leftover lock file blocks nothing.
+`--dry-run` neither takes the lock nor waits on it.
+
 ### Series
 
 | Metric | Type | Meaning |
