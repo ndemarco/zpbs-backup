@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +22,28 @@ from .zfs import (
 
 
 SKEW_MARGIN_SECONDS = 60
+
+
+def failure_message(result: subprocess.CompletedProcess) -> str:
+    """Describe why a proxmox-backup-client command failed.
+
+    Prefers what the client itself said. A CompletedProcess always has a
+    stderr attribute, so testing for one tells you nothing about whether it
+    holds text — the value is None whenever output was not captured. When
+    the client printed nothing at all, fall back to the exit status, which
+    is still more use than an empty string.
+
+    Args:
+        result: The CompletedProcess of the failed command
+
+    Returns:
+        A non-empty, human-readable error message
+    """
+    for stream in (result.stderr, result.stdout):
+        if stream and stream.strip():
+            return stream.strip()
+
+    return f"proxmox-backup-client exited {result.returncode} with no output"
 
 
 @dataclass
@@ -78,12 +101,12 @@ class BackupOrchestrator:
         output: TextIO | None = None,
     ):
         self.config = config
-        self.client = PBSClient(config)
+        self.output = output or sys.stdout
+        self.client = PBSClient(config, output=self.output)
         self.hostname = get_hostname()
         self.dry_run = dry_run
         self.force = force
         self.change_detection_mode = change_detection_mode
-        self.output = output or sys.stdout
         self._progress_callback: Callable[[str], None] | None = None
         self.skip_unchanged_safe: bool = True
 
@@ -274,7 +297,7 @@ class BackupOrchestrator:
                 duration_seconds=duration,
             )
         else:
-            error = result.stderr if hasattr(result, "stderr") else "Unknown error"
+            error = failure_message(result)
             self._log(f"  FAILED: {error}")
             return BackupResult(
                 dataset=dataset,
@@ -363,10 +386,10 @@ class PruneOrchestrator:
         output: TextIO | None = None,
     ):
         self.config = config
-        self.client = PBSClient(config)
+        self.output = output or sys.stdout
+        self.client = PBSClient(config, output=self.output)
         self.hostname = get_hostname()
         self.dry_run = dry_run
-        self.output = output or sys.stdout
 
     def _log(self, message: str) -> None:
         print(message, file=self.output)

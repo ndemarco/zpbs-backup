@@ -5,17 +5,100 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import ssl
 import subprocess
+import sys
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Optional
+from typing import Optional, TextIO
 
 from .config import PBSConfig
 
 
 PBS_DEFAULT_PORT = 8007
+
+# How many trailing output lines a streamed command keeps for error reporting.
+# A backup can emit hours of progress; only the tail explains a failure.
+ERROR_TAIL_LINES = 50
+
+_LINE_BREAK = re.compile(r"([\r\n])")
+
+
+def run_streaming(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+    output: TextIO | None = None,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess:
+    """Run a command, echoing its output live while retaining a tail.
+
+    A backup runs for hours and its progress must stay visible as it happens,
+    which rules out subprocess.run(capture_output=True). Letting the child
+    inherit stdout keeps the progress but leaves nothing to quote when the
+    command fails. This reads the merged stream as it arrives, writes it
+    straight through, and keeps the last ERROR_TAIL_LINES lines so a failure
+    can report what the client actually said.
+
+    A segment ending in a carriage return was redrawn over on the terminal —
+    a progress counter, not a record — so it is echoed but kept out of the
+    tail, unless the command produced nothing else.
+
+    Args:
+        cmd: The full command to run
+        env: Environment for the child process
+        output: Where to echo the child's output (defaults to sys.stdout)
+        timeout: Seconds to wait for exit after the stream closes, or None
+
+    Returns:
+        CompletedProcess whose stdout holds the retained tail
+    """
+    sink = output if output is not None else sys.stdout
+    tail: deque[str] = deque(maxlen=ERROR_TAIL_LINES)
+    last_progress = ""
+    pending = ""
+
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.stdout is not None
+
+    try:
+        while True:
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            if not chunk:
+                break
+
+            text = chunk.decode("utf-8", errors="replace")
+            sink.write(text)
+            sink.flush()
+
+            segments = _LINE_BREAK.split((pending + text).replace("\r\n", "\n"))
+            pending = segments.pop()
+            for line, terminator in zip(segments[::2], segments[1::2]):
+                if not line.strip():
+                    continue
+                if terminator == "\n":
+                    tail.append(line.strip())
+                else:
+                    last_progress = line.strip()
+    finally:
+        proc.stdout.close()
+
+    if pending.strip():
+        tail.append(pending.strip())
+
+    if not tail and last_progress:
+        tail.append(last_progress)
+
+    returncode = proc.wait(timeout=timeout)
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=returncode,
+        stdout="\n".join(tail),
+        stderr="",
+    )
 
 
 def _parse_server_address(server: str) -> tuple[str, int]:
@@ -78,8 +161,9 @@ class BackupGroup:
 class PBSClient:
     """Wrapper for proxmox-backup-client commands."""
 
-    def __init__(self, config: PBSConfig):
+    def __init__(self, config: PBSConfig, output: TextIO | None = None):
         self.config = config
+        self.output = output if output is not None else sys.stdout
         self._env: dict[str, str] | None = None
 
     def _get_env(self) -> dict[str, str]:
@@ -288,7 +372,9 @@ class PBSClient:
             dry_run: If True, don't actually run the backup
 
         Returns:
-            CompletedProcess from the backup command
+            CompletedProcess from the backup command. On failure its stdout
+            holds the tail of the client's own output, so the caller can
+            report what actually went wrong.
         """
         args = [
             "backup",
@@ -318,7 +404,12 @@ class PBSClient:
             )
 
         # No timeout for backups — they can run for hours
-        return self._run(args, check=False, capture_output=False, timeout=None)
+        return run_streaming(
+            ["proxmox-backup-client"] + args,
+            env=self._get_env(),
+            output=self.output,
+            timeout=None,
+        )
 
     def create_namespace(self, namespace: str) -> bool:
         """Create a namespace if it doesn't exist.

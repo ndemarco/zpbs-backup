@@ -1,12 +1,23 @@
 """Tests for PBS client wrapper."""
 
+import io
+import subprocess
+import sys
 import unittest.mock as umock
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from zpbs_backup import pbs as pbs_mod
 from zpbs_backup.config import PBSConfig
-from zpbs_backup.pbs import BackupGroup, BackupSnapshot, PBSClient, _parse_server_address
+from zpbs_backup.pbs import (
+    ERROR_TAIL_LINES,
+    BackupGroup,
+    BackupSnapshot,
+    PBSClient,
+    _parse_server_address,
+    run_streaming,
+)
 
 
 class TestBackupSnapshot:
@@ -175,12 +186,12 @@ class TestPBSClientBackup:
 
         monkeypatch.setattr("os.environ", {"USERS_ENV_VAR1": "VALUE1", "USERS_ENV_VAR2": "VALUE2"})
 
-        with umock.patch("subprocess.run") as subprocess_run:
+        with umock.patch.object(pbs_mod, "run_streaming") as streamed:
             client.backup(
                 backup_id="test-backup",
                 source_path="/test/path",
             )
-            assert subprocess_run.call_args == umock.call(
+            assert streamed.call_args == umock.call(
                 [
                     "proxmox-backup-client",
                     "backup",
@@ -194,9 +205,7 @@ class TestPBSClientBackup:
                     "USERS_ENV_VAR1": "VALUE1",
                     "USERS_ENV_VAR2": "VALUE2",
                 },
-                capture_output=False,
-                text=True,
-                check=False,
+                output=client.output,
                 timeout=None,
             )
 
@@ -253,3 +262,78 @@ class TestClockSkew:
     def test_get_server_time_returns_none_when_no_server_configured(self):
         client = PBSClient(PBSConfig(repository=""))
         assert client.get_server_time() is None
+
+
+class TestRunStreaming:
+    """Tests for run_streaming."""
+
+    def test_echoes_output_live_and_retains_it(self):
+        """The child's output reaches the sink and the retained tail."""
+        sink = io.StringIO()
+        result = run_streaming(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('starting'); "
+                "print('Error: unable to open chunk store', file=sys.stderr); "
+                "sys.exit(3)",
+            ],
+            output=sink,
+        )
+
+        assert result.returncode == 3
+        assert "starting" in sink.getvalue()
+        assert "unable to open chunk store" in sink.getvalue()
+        assert "unable to open chunk store" in result.stdout
+
+    def test_tail_is_bounded(self):
+        """A long run keeps only the last ERROR_TAIL_LINES lines."""
+        total = ERROR_TAIL_LINES * 3
+        sink = io.StringIO()
+        result = run_streaming(
+            [sys.executable, "-c", f"[print(i) for i in range({total})]"],
+            output=sink,
+        )
+
+        lines = result.stdout.splitlines()
+        assert result.returncode == 0
+        assert len(lines) == ERROR_TAIL_LINES
+        assert lines[-1] == str(total - 1)
+
+    def test_carriage_return_progress_is_echoed_but_kept_out_of_the_tail(self):
+        """Progress redrawn with \\r is transient, so only the real line is kept."""
+        sink = io.StringIO()
+        result = run_streaming(
+            [
+                sys.executable,
+                "-c",
+                r"import sys; sys.stdout.write('10%\r50%\rfailed: broken pipe\n')",
+            ],
+            output=sink,
+        )
+
+        assert "50%" in sink.getvalue()
+        assert result.stdout == "failed: broken pipe"
+
+    def test_progress_is_kept_when_it_is_all_there_was(self):
+        """A command that only ever redrew progress still explains itself."""
+        sink = io.StringIO()
+        result = run_streaming(
+            [sys.executable, "-c", r"import sys; sys.stdout.write('stalled at 10%\r')"],
+            output=sink,
+        )
+
+        assert result.stdout == "stalled at 10%"
+
+    def test_backup_streams_and_returns_the_tail(self):
+        """PBSClient.backup routes through run_streaming with its own sink."""
+        sink = io.StringIO()
+        client = PBSClient(PBSConfig(repository="u@p!t@srv:store", server="srv"), output=sink)
+        completed = subprocess.CompletedProcess(args=[], returncode=2, stdout="boom", stderr="")
+
+        with umock.patch.object(pbs_mod, "run_streaming", return_value=completed) as streamed:
+            result = client.backup(backup_id="host-tank-data", source_path="/tank/data")
+
+        assert result.stdout == "boom"
+        assert streamed.call_args.kwargs["output"] is sink
+        assert streamed.call_args.args[0][0] == "proxmox-backup-client"
