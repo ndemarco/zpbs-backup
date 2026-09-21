@@ -1,0 +1,15 @@
+[Unit]
+Description=Apply zpbs:retention to Proxmox Backup Server snapshots
+Documentation=https://github.com/ndemarco/zpbs-backup
+
+[Timer]
+# Well clear of the 02:00 backup window, which can run for over an hour.
+# Overlap is still prevented by the run lock; this only avoids a routine
+# deferral every night.
+OnCalendar=*-*-* 05:00:00
+RandomizedDelaySec=900
+# Run on next boot if the scheduled time was missed
+Persistent=true
+
+[Install]
+WantedBy=timers.target

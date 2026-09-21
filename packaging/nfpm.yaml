@@ -30,6 +30,16 @@ contents:
     dst: /lib/systemd/system/zpbs-backup.timer
     type: config|noreplace
 
+  # Prune units: installed but NOT enabled. Prune deletes real backups, so
+  # enabling it is an operator decision, made after a --dry-run.
+  - src: ./systemd/zpbs-backup-prune.service
+    dst: /lib/systemd/system/zpbs-backup-prune.service
+    type: config|noreplace
+
+  - src: ./systemd/zpbs-backup-prune.timer
+    dst: /lib/systemd/system/zpbs-backup-prune.timer
+    type: config|noreplace
+
   # Config directory
   - dst: /etc/zpbs-backup/
     type: dir

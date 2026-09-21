@@ -8,5 +8,8 @@ if command -v systemctl &>/dev/null; then
         systemctl stop zpbs-backup.timer 2>/dev/null || true
         systemctl stop zpbs-backup.service 2>/dev/null || true
         systemctl disable zpbs-backup.timer 2>/dev/null || true
+        systemctl stop zpbs-backup-prune.timer 2>/dev/null || true
+        systemctl stop zpbs-backup-prune.service 2>/dev/null || true
+        systemctl disable zpbs-backup-prune.timer 2>/dev/null || true
     fi
 fi
