@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -88,6 +88,44 @@ class TestUnchangedSkipReason:
         with patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
             assert orch._unchanged_skip_reason(_ds(), last_backup) is None
+
+
+class TestPlanScheduleCheck:
+    """Tests for the schedule gate in BackupOrchestrator.plan."""
+
+    def test_force_bypasses_the_schedule_check(self):
+        """--force backs up regardless of when the last backup ran."""
+        orch = _orch(force=True)
+        ds = _ds()
+        with patch.object(backup_mod, "is_backup_due") as is_due, \
+             patch.object(orch.client, "get_last_backup_time") as last_backup:
+            plan = orch.plan([ds])
+        is_due.assert_not_called()
+        last_backup.assert_not_called()
+        assert plan == [(ds, True, None)]
+
+    def test_daily_dataset_stamped_after_midnight_is_planned_next_day(self):
+        """A dataset a long run stamped at 03:20 is planned the following day."""
+        orch = _orch()
+        ds = _ds()
+        stamped_late = (datetime.now() - timedelta(days=1)).replace(hour=3, minute=20)
+        with patch.object(orch.client, "get_last_backup_time", return_value=stamped_late), \
+             patch.object(backup_mod, "get_written_bytes", return_value=12345), \
+             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
+            plan = orch.plan([ds])
+        assert plan == [(ds, True, None)]
+
+    def test_daily_dataset_already_backed_up_today_is_skipped(self):
+        """A dataset backed up earlier the same day is not due again."""
+        orch = _orch()
+        ds = _ds()
+        with patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+            plan = orch.plan([ds])
+        assert len(plan) == 1
+        planned_ds, should_backup, reason = plan[0]
+        assert planned_ds is ds
+        assert should_backup is False
+        assert reason is not None and "not due" in reason
 
 
 class TestPreflightSkewCheck:

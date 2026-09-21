@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from .zfs import Schedule
 
@@ -15,12 +15,43 @@ SCHEDULE_INTERVALS = {
 }
 
 
+def next_due_time(schedule: Schedule, last_backup: datetime) -> datetime:
+    """Return the moment a dataset becomes due again after last_backup.
+
+    Daily datasets use calendar-day semantics: due at midnight following the
+    last backup, i.e. once per day. A fixed 24-hour interval would instead
+    carry the previous run's duration forward — a run that stamps a dataset at
+    03:20 would not be due again at the next night's 02:05 start, so coverage
+    alternates night to night. Weekly and monthly stay on a fixed interval.
+
+    Args:
+        schedule: The backup schedule (daily, weekly, monthly)
+        last_backup: Timestamp of the last backup
+
+    Returns:
+        The time at which the next backup becomes due
+    """
+    interval = SCHEDULE_INTERVALS.get(schedule)
+
+    if interval is None or schedule is Schedule.DAILY:
+        return datetime.combine(
+            last_backup.date() + timedelta(days=1),
+            time.min,
+            tzinfo=last_backup.tzinfo,
+        )
+
+    return last_backup + interval
+
+
 def is_backup_due(
     schedule: Schedule,
     last_backup: datetime | None,
     now: datetime | None = None,
 ) -> bool:
     """Determine if a backup is due based on schedule and last backup time.
+
+    Daily uses calendar-day semantics; weekly and monthly use a fixed
+    interval. See next_due_time.
 
     Args:
         schedule: The backup schedule (daily, weekly, monthly)
@@ -37,10 +68,7 @@ def is_backup_due(
     if last_backup is None:
         return True
 
-    interval = SCHEDULE_INTERVALS.get(schedule, SCHEDULE_INTERVALS[Schedule.DAILY])
-    next_due = last_backup + interval
-
-    return now >= next_due
+    return now >= next_due_time(schedule, last_backup)
 
 
 def time_until_due(
@@ -64,8 +92,7 @@ def time_until_due(
     if last_backup is None:
         return None  # Already due
 
-    interval = SCHEDULE_INTERVALS.get(schedule, SCHEDULE_INTERVALS[Schedule.DAILY])
-    next_due = last_backup + interval
+    next_due = next_due_time(schedule, last_backup)
 
     if now >= next_due:
         return None  # Already due
