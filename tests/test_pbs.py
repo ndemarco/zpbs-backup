@@ -4,7 +4,7 @@ import io
 import subprocess
 import sys
 import unittest.mock as umock
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -235,21 +235,21 @@ class TestClockSkew:
         )
 
     def test_skew_zero_when_server_matches_local(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with umock.patch.object(PBSClient, "get_server_time", return_value=now):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert abs(skew) < 1.0
 
     def test_skew_positive_when_server_ahead(self):
-        future = datetime.now(timezone.utc) + timedelta(seconds=120)
+        future = datetime.now(UTC) + timedelta(seconds=120)
         with umock.patch.object(PBSClient, "get_server_time", return_value=future):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None
         assert 119 < skew < 121
 
     def test_skew_negative_when_server_behind(self):
-        past = datetime.now(timezone.utc) - timedelta(seconds=90)
+        past = datetime.now(UTC) - timedelta(seconds=90)
         with umock.patch.object(PBSClient, "get_server_time", return_value=past):
             skew = self._client().get_clock_skew_seconds()
         assert skew is not None

@@ -1,8 +1,6 @@
 """Tests for schedule evaluation."""
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from zpbs_backup.scheduler import (
     format_last_backup,
@@ -74,8 +72,8 @@ class TestIsBackupDue:
 
     def test_daily_aware_timestamps_are_not_mixed_with_naive(self):
         """An aware last_backup yields an aware due time, so no TypeError."""
-        last_backup = datetime(2026, 3, 10, 3, 20, tzinfo=timezone.utc)
-        now = datetime(2026, 3, 11, 2, 5, tzinfo=timezone.utc)
+        last_backup = datetime(2026, 3, 10, 3, 20, tzinfo=UTC)
+        now = datetime(2026, 3, 11, 2, 5, tzinfo=UTC)
         assert is_backup_due(Schedule.DAILY, last_backup, now=now)
 
     def test_weekly_not_due(self):

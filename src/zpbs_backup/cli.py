@@ -87,7 +87,9 @@ def status(orphans: bool, json_output: bool) -> None:
         for ds in datasets:
             backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
             namespace = ds.namespace or ds.get_auto_namespace(hostname)
-            last_backup = client.get_last_backup_time(backup_id, namespace) if ds.backup_enabled else None
+            last_backup = (
+                client.get_last_backup_time(backup_id, namespace) if ds.backup_enabled else None
+            )
 
             errors = ds.property_errors()
             readable = not errors
@@ -343,14 +345,14 @@ def audit() -> None:
     all_groups = client.list_all_backup_groups()
 
     orphans = []
-    for namespace, group in all_groups:
+    for group_ns, group in all_groups:
         if group.backup_id not in expected_ids:
-            orphans.append((namespace, group))
+            orphans.append((group_ns, group))
 
     if orphans:
         click.echo(f"Found {len(orphans)} orphaned backup group(s):")
-        for namespace, group in orphans:
-            ns_str = f" (ns: {namespace})" if namespace else ""
+        for group_ns, group in orphans:
+            ns_str = f" (ns: {group_ns})" if group_ns else ""
             last = group.last_backup.strftime("%Y-%m-%d") if group.last_backup else "unknown"
             click.echo(
                 f"  - {group.backup_type}/{group.backup_id}{ns_str} "
@@ -485,13 +487,13 @@ def prune(dry_run: bool, pattern: str | None) -> None:
 
     if dry_run:
         # Deletes nothing, so it need not wait on a running backup.
-        success, failed = orchestrator.run(pattern)
+        _success, failed = orchestrator.run(pattern)
     else:
         try:
             # The same lock a backup run takes: never prune a backup group
             # that is being written to.
             with run_lock():
-                success, failed = orchestrator.run(pattern)
+                _success, failed = orchestrator.run(pattern)
         except AlreadyRunning as e:
             click.echo(f"Not starting: {e}", err=True)
             sys.exit(EXIT_ALREADY_RUNNING)
@@ -543,13 +545,18 @@ def get_property_cmd(dataset: str, property: str) -> None:
         if prop:
             click.echo(f"{prop.value}\t{prop.source}")
         else:
-            click.echo(f"-")
+            click.echo("-")
 
 
 @main.command("set")
 @click.argument("property_value")
 @click.argument("dataset")
-@click.option("-c", "--clear", is_flag=True, help="When setting backup=false, also clear all properties")
+@click.option(
+    "-c",
+    "--clear",
+    is_flag=True,
+    help="When setting backup=false, also clear all properties",
+)
 @click.option("-r", "--recursive", is_flag=True, help="Apply recursively to descendants")
 def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: bool) -> None:
     """Set a zpbs property on a dataset.
@@ -596,7 +603,10 @@ def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: 
                 err=True,
             )
         else:
-            click.echo(f"Error: Failed to set {short_name}={value} on {dataset}: {stderr}", err=True)
+            click.echo(
+                f"Error: Failed to set {short_name}={value} on {dataset}: {stderr}",
+                err=True,
+            )
         sys.exit(1)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -765,7 +775,8 @@ def notify_config() -> None:
     click.echo(f"  External script: {config.external_script or '(not found)'}")
     click.echo("")
     click.echo("Environment variables:")
-    click.echo(f"  ZPBS_NOTIFY       = {os.environ.get('ZPBS_NOTIFY', '(not set, defaults to true)')}")
+    notify_env = os.environ.get("ZPBS_NOTIFY", "(not set, defaults to true)")
+    click.echo(f"  ZPBS_NOTIFY       = {notify_env}")
     click.echo(f"  ZPBS_NOTIFY_EMAIL = {os.environ.get('ZPBS_NOTIFY_EMAIL', '(not set)')}")
 
 

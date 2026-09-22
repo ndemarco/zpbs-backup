@@ -8,7 +8,6 @@ import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # Config file search order (first match with PBS_REPOSITORY wins).
 # Per-user config overrides system-wide.
 CONFIG_PATHS = [
@@ -292,7 +291,7 @@ def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
     )
 
     fingerprint = variables.get("PBS_FINGERPRINT", variables.get("FINGERPRINT"))
-    keyfile = variables.get("PBS_ENCRYPTION_KEYFILE", None)
+    keyfile = variables.get("PBS_ENCRYPTION_KEYFILE")
 
     # Parse repository for display fields if not set from individual vars
     if repository and not all([user, token_name, server, datastore]):

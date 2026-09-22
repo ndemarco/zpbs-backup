@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 from click.testing import CliRunner
 
 from zpbs_backup import cli as cli_mod
@@ -21,7 +20,7 @@ def _prune(args, lock_path):
     with patch.object(lock_mod, "LOCK_PATH", lock_path), \
          patch.object(cli_mod, "load_config", return_value=pbs_config), \
          patch.object(cli_mod.PruneOrchestrator, "run", return_value=(1, 0)) as pruned:
-        result = runner.invoke(main, ["prune"] + args)
+        result = runner.invoke(main, ["prune", *args])
 
     return result, pruned
 

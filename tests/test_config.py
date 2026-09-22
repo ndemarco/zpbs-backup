@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from unittest import mock
-
 import pytest
 
 from zpbs_backup.config import (
@@ -14,7 +10,6 @@ from zpbs_backup.config import (
     _interpolate_variables,
     _parse_config_variables,
     _parse_repository,
-    get_all_config_sources,
     load_config,
     mask_secret,
     validate_backup_id_separator,
@@ -41,9 +36,7 @@ class TestParseRepository:
         assert ds == "datastore1"
 
     def test_datastore_with_path(self):
-        user, token, server, ds = _parse_repository(
-            "backup@pbs!tok@host:store/sub"
-        )
+        _, _, _, ds = _parse_repository("backup@pbs!tok@host:store/sub")
         assert ds == "store/sub"
 
     def test_unparseable_returns_nones(self):
@@ -265,7 +258,7 @@ class TestLoadConfig:
         for var in [
             "PBS_REPOSITORY", "PBS_PASSWORD", "PBS_FINGERPRINT",
             "PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE",
-            "PBS_API_TOKEN_SECRET", "PBS_ENCRYPTION_KEYFILE", "REPOSITORY", 
+            "PBS_API_TOKEN_SECRET", "PBS_ENCRYPTION_KEYFILE", "REPOSITORY",
             "PASSWORD", "FINGERPRINT",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -279,7 +272,7 @@ class TestLoadConfig:
         )
         if with_encryption:
             contents += "PBS_ENCRYPTION_KEYFILE=/path/to/key.enc\n"
-            
+
         conf.write_text(contents)
 
         # Patch CONFIG_PATHS to use our temp file
@@ -299,7 +292,7 @@ class TestLoadConfig:
         for var in [
             "PBS_REPOSITORY", "PBS_PASSWORD", "PBS_FINGERPRINT",
             "PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE",
-            "PBS_API_TOKEN_SECRET", "PBS_ENCRYPTION_KEYFILE", "REPOSITORY", 
+            "PBS_API_TOKEN_SECRET", "PBS_ENCRYPTION_KEYFILE", "REPOSITORY",
             "PASSWORD", "FINGERPRINT",
         ]:
             monkeypatch.delenv(var, raising=False)

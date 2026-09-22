@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from zpbs_backup import notify as notify_mod
 from zpbs_backup.backup import BackupResult, BackupSummary
 from zpbs_backup.notify import _send_to_syslog, _syslog_error, format_summary_for_email
-from zpbs_backup.zfs import Dataset, PropertyValue, PROP_BACKUP
-
+from zpbs_backup.zfs import PROP_BACKUP, Dataset, PropertyValue
 
 CLIENT_ERROR = "Error: unable to open chunk store\nCaused by: permission denied"
 

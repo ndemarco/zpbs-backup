@@ -224,9 +224,9 @@ class Dataset:
         return f"{hostname}/{self.pool}"
 
 
-def run_zfs_command(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+def run_zfs_command(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run a zfs command and return the result."""
-    cmd = ["zfs"] + args
+    cmd = ["zfs", *args]
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 

@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import syslog
 from dataclasses import dataclass
-from datetime import datetime
 
 from .backup import BackupSummary
 
@@ -65,12 +64,14 @@ def format_summary_for_email(summary: BackupSummary, hostname: str) -> tuple[str
     status = "SUCCESS" if summary.failed == 0 else "FAILURE"
     subject = f"[zpbs-backup] {hostname}: {status}"
 
+    end_time = summary.end_time.strftime("%Y-%m-%d %H:%M:%S") if summary.end_time else "N/A"
+
     lines = [
         f"Backup Summary for {hostname}",
         "=" * 40,
         "",
         f"Start time: {summary.start_time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"End time:   {summary.end_time.strftime('%Y-%m-%d %H:%M:%S') if summary.end_time else 'N/A'}",
+        f"End time:   {end_time}",
         f"Duration:   {summary.duration_seconds:.1f}s",
         "",
         "Results:",

@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from zpbs_backup import cli as cli_mod
 from zpbs_backup.cli import main
 from zpbs_backup.config import PBSConfig
-from zpbs_backup.zfs import Dataset, PropertyValue, PROP_BACKUP, PROP_SCHEDULE
+from zpbs_backup.zfs import PROP_BACKUP, PROP_SCHEDULE, Dataset, PropertyValue
 
 
 @pytest.fixture

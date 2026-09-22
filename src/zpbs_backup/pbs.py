@@ -11,12 +11,11 @@ import subprocess
 import sys
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Optional, TextIO
+from typing import Any, TextIO
 
 from .config import PBSConfig
-
 
 PBS_DEFAULT_PORT = 8007
 
@@ -32,7 +31,7 @@ def run_streaming(
     env: dict[str, str] | None = None,
     output: TextIO | None = None,
     timeout: int | None = None,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     """Run a command, echoing its output live while retaining a tail.
 
     A backup runs for hours and its progress must stay visible as it happens,
@@ -75,7 +74,9 @@ def run_streaming(
 
             segments = _LINE_BREAK.split((pending + text).replace("\r\n", "\n"))
             pending = segments.pop()
-            for line, terminator in zip(segments[::2], segments[1::2]):
+            # After the pop above, segments alternates text/terminator and has
+            # even length, so the two slices are always the same length.
+            for line, terminator in zip(segments[::2], segments[1::2], strict=True):
                 if not line.strip():
                     continue
                 if terminator == "\n":
@@ -118,14 +119,14 @@ class BackupSnapshot:
 
     backup_type: str  # 'host', 'vm', 'ct'
     backup_id: str
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
     size: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> BackupSnapshot:
+    def from_dict(cls, data: dict[str, Any]) -> BackupSnapshot:
         """Create from PBS JSON output."""
         backup_time = data.get("backup-time") or data.get("last-backup")
-        timestamp: Optional[datetime] = None
+        timestamp: datetime | None = None
 
         if backup_time:
             if isinstance(backup_time, (int, float)):
@@ -179,9 +180,9 @@ class PBSClient:
         check: bool = True,
         capture_output: bool = True,
         timeout: int | None = 30,
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess[str]:
         """Run a proxmox-backup-client command."""
-        cmd = ["proxmox-backup-client"] + args
+        cmd = ["proxmox-backup-client", *args]
         return subprocess.run(
             cmd,
             env=self._get_env(),
@@ -203,14 +204,14 @@ class PBSClient:
                 check=False,
                 timeout=10,
             )
-        except FileNotFoundError:
+        except FileNotFoundError as err:
             raise ConnectionError(
                 "proxmox-backup-client not found. Install the Proxmox Backup client package."
-            )
-        except subprocess.TimeoutExpired:
+            ) from err
+        except subprocess.TimeoutExpired as err:
             raise ConnectionError(
                 "Timed out connecting to PBS server. Check PBS_REPOSITORY and network."
-            )
+            ) from err
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
@@ -258,8 +259,8 @@ class PBSClient:
         except (TypeError, ValueError):
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     def get_clock_skew_seconds(self) -> float | None:
         """Return PBS_time - local_time in seconds, or None if probe failed.
@@ -269,7 +270,7 @@ class PBSClient:
         server_time = self.get_server_time()
         if server_time is None:
             return None
-        local_time = datetime.now(timezone.utc)
+        local_time = datetime.now(UTC)
         return (server_time - local_time).total_seconds()
 
     def list_snapshots(self, namespace: str | None = None) -> list[BackupSnapshot]:
@@ -323,9 +324,10 @@ class PBSClient:
 
             group = groups[key]
             group.snapshot_count += 1
-            if snapshot.timestamp is not None:
-                if group.last_backup is None or snapshot.timestamp > group.last_backup:
-                    group.last_backup = snapshot.timestamp
+            if snapshot.timestamp is not None and (
+                group.last_backup is None or snapshot.timestamp > group.last_backup
+            ):
+                group.last_backup = snapshot.timestamp
 
         return list(groups.values())
 
@@ -343,14 +345,15 @@ class PBSClient:
         """
         snapshots = self.list_snapshots(namespace)
 
-        matching = [
-            s for s in snapshots
+        timestamps = [
+            s.timestamp
+            for s in snapshots
             if s.backup_id == backup_id and s.timestamp is not None
         ]
-        if not matching:
+        if not timestamps:
             return None
 
-        return max(s.timestamp for s in matching)
+        return max(timestamps)
 
     def backup(
         self,
@@ -360,7 +363,7 @@ class PBSClient:
         namespace: str | None = None,
         change_detection_mode: str | None = None,
         dry_run: bool = False,
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess[str]:
         """Run a backup.
 
         Args:
@@ -397,7 +400,7 @@ class PBSClient:
         if dry_run:
             # Return a fake successful result for dry-run
             return subprocess.CompletedProcess(
-                args=["proxmox-backup-client"] + args,
+                args=["proxmox-backup-client", *args],
                 returncode=0,
                 stdout=f"[DRY-RUN] Would backup {source_path} as {backup_id}",
                 stderr="",
@@ -405,7 +408,7 @@ class PBSClient:
 
         # No timeout for backups — they can run for hours
         return run_streaming(
-            ["proxmox-backup-client"] + args,
+            ["proxmox-backup-client", *args],
             env=self._get_env(),
             output=self.output,
             timeout=None,
@@ -428,11 +431,14 @@ class PBSClient:
         for i in range(1, len(parts) + 1):
             partial_ns = "/".join(parts[:i])
             result = self._run(["namespace", "create", partial_ns], check=False)
-            # Continue even if it already exists
-            if result.returncode != 0 and "already exists" not in result.stderr.lower():
-                # Real error - but only fail on the final namespace
-                if i == len(parts):
-                    return False
+            # Continue even if it already exists; a real error only fails the
+            # run when it is the final namespace level.
+            if (
+                result.returncode != 0
+                and "already exists" not in result.stderr.lower()
+                and i == len(parts)
+            ):
+                return False
 
         return True
 
@@ -446,7 +452,7 @@ class PBSClient:
         keep_yearly: int | None = None,
         namespace: str | None = None,
         dry_run: bool = False,
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess[str]:
         """Prune old backups according to retention policy.
 
         Args:

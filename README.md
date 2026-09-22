@@ -542,7 +542,15 @@ pytest
 
 # Run tests with coverage
 pytest --cov=zpbs_backup
+
+# Lint and type check
+ruff check .
+mypy
 ```
+
+Every pull request and every branch push runs those three in GitHub Actions
+(`.github/workflows/ci.yml`), and all three must pass. `ruff check --fix`
+applies the mechanical fixes.
 
 ## License
 

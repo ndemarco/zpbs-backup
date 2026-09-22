@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import sys
 import tempfile
 import time
@@ -112,10 +111,12 @@ def _render_metrics(summary: BackupSummary) -> bytes:
         last_success_ts = _read_last_success() or 0.0
 
     lines = [
-        "# HELP zpbs_backup_last_run_timestamp_seconds Unix timestamp of most recent backup run end",
+        "# HELP zpbs_backup_last_run_timestamp_seconds "
+        "Unix timestamp of most recent backup run end",
         "# TYPE zpbs_backup_last_run_timestamp_seconds gauge",
         f"zpbs_backup_last_run_timestamp_seconds {run_end_ts}",
-        "# HELP zpbs_backup_last_success_timestamp_seconds Unix timestamp of last fully successful backup run",
+        "# HELP zpbs_backup_last_success_timestamp_seconds "
+        "Unix timestamp of last fully successful backup run",
         "# TYPE zpbs_backup_last_success_timestamp_seconds gauge",
         f"zpbs_backup_last_success_timestamp_seconds {last_success_ts}",
         "# HELP zpbs_backup_duration_seconds Duration of the backup run in seconds",
