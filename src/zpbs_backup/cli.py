@@ -483,7 +483,21 @@ def prune(dry_run: bool, pattern: str | None) -> None:
         dry_run=dry_run,
     )
 
-    success, failed = orchestrator.run(pattern)
+    if dry_run:
+        # Deletes nothing, so it need not wait on a running backup.
+        success, failed = orchestrator.run(pattern)
+    else:
+        try:
+            # The same lock a backup run takes: never prune a backup group
+            # that is being written to.
+            with run_lock():
+                success, failed = orchestrator.run(pattern)
+        except AlreadyRunning as e:
+            click.echo(f"Not starting: {e}", err=True)
+            sys.exit(EXIT_ALREADY_RUNNING)
+        except OSError as e:
+            click.echo(f"Error: cannot take the run lock: {e}", err=True)
+            sys.exit(1)
 
     if failed > 0:
         sys.exit(1)

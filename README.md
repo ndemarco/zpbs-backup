@@ -287,6 +287,30 @@ zpbs-backup prune --dry-run
 zpbs-backup prune --dataset 'tank/*'
 ```
 
+`zpbs:retention` is not enforced until something runs `prune`. The package
+ships a timer for it, **installed but disabled**, because prune deletes real
+backups and opting in is your decision, not the installer's.
+
+See what it would delete before enabling anything:
+
+```bash
+zpbs-backup prune --dry-run
+```
+
+Then opt in:
+
+```bash
+systemctl enable --now zpbs-backup-prune.timer
+systemctl list-timers zpbs-backup-prune.timer
+```
+
+The timer runs daily at 05:00 with up to 15 minutes of jitter, well clear of
+the 02:00 backup window. Prune takes the same exclusive lock as a backup run,
+so it will not delete from a group currently being written to; if a backup is
+still running it defers with status 75, which the unit treats as success
+rather than a failure. `prune --dry-run` neither takes the lock nor waits on
+it.
+
 ### Property Management
 
 ```bash

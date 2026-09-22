@@ -48,12 +48,20 @@ if command -v systemctl &>/dev/null; then
     # Enable timer on fresh install (not on upgrade)
     # deb: $1 = "configure"; rpm: $1 = 1 (install count)
     if [ "$1" = "configure" ] || [ "$1" = "1" ]; then
+        # Only the backup timer is enabled here. The prune timer is installed
+        # but left disabled on purpose: prune deletes real backups, so opting
+        # in is the operator's call, made after a --dry-run.
         systemctl enable zpbs-backup.timer || true
         echo ""
         echo "zpbs-backup installed successfully."
-        echo "  Timer enabled (daily at 2:00 AM)."
+        echo "  Backup timer enabled (daily at 2:00 AM)."
         echo "  Configure PBS connection: /etc/zpbs-backup/pbs.conf"
         echo "  Then start the timer:     systemctl start zpbs-backup.timer"
+        echo ""
+        echo "  Retention (zpbs:retention) is NOT applied until you enable"
+        echo "  the prune timer. Check what it would delete first:"
+        echo "    zpbs-backup prune --dry-run"
+        echo "    systemctl enable --now zpbs-backup-prune.timer"
         echo ""
     fi
 fi

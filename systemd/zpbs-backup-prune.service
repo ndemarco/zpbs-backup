@@ -1,0 +1,34 @@
+[Unit]
+Description=Apply zpbs:retention to Proxmox Backup Server snapshots
+Documentation=https://github.com/ndemarco/zpbs-backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zpbs-backup prune
+# Load PBS credentials from file if not in environment
+EnvironmentFile=-/etc/zpbs-backup/pbs.conf
+
+# Prune takes the same exclusive lock as a backup run, so it never deletes
+# snapshots from a group being written to. 75 is what it exits with when a
+# run already holds that lock — a deferral, not a failure.
+SuccessExitStatus=75
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+# Need network for PBS
+PrivateNetwork=false
+# Need access to ZFS commands
+ReadWritePaths=/dev/zfs
+
+# /var/lib/zpbs-backup, shared with zpbs-backup.service: the run lock lives
+# here, and both must reach the same file for the lock to mean anything.
+StateDirectory=zpbs-backup
+StateDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target
