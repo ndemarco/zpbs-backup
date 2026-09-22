@@ -5,10 +5,11 @@ from __future__ import annotations
 import fnmatch
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Callable, NamedTuple, TextIO
+from typing import NamedTuple, TextIO
 
 from .config import PBSConfig, get_hostname
 from .pbs import PBSClient
@@ -23,11 +24,10 @@ from .zfs import (
     get_written_bytes,
 )
 
-
 SKEW_MARGIN_SECONDS = 60
 
 
-def failure_message(result: subprocess.CompletedProcess) -> str:
+def failure_message(result: subprocess.CompletedProcess[str]) -> str:
     """Describe why a proxmox-backup-client command failed.
 
     Prefers what the client itself said. A CompletedProcess always has a
@@ -323,7 +323,7 @@ class BackupOrchestrator:
         self._log(f"Backing up {dataset.name} -> {backup_id}")
 
         if not mountpoint:
-            self._log(f"  Skipped: no mountpoint (mountpoint=none or legacy)")
+            self._log("  Skipped: no mountpoint (mountpoint=none or legacy)")
             return BackupResult(
                 dataset=dataset,
                 success=True,

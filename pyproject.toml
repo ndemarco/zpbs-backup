@@ -34,6 +34,8 @@ dev = [
     "pytest-cov>=4.0",
     "build>=1.0",
     "twine>=4.0",
+    "ruff",
+    "mypy",
 ]
 
 [project.scripts]
@@ -55,3 +57,44 @@ packages = ["src/zpbs_backup"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+mypy_path = "src"
+strict = true
+
+# The test suite is deliberately unannotated: a pytest function's signature
+# carries no information a reader or the checker needs. Real type errors in
+# tests are still reported; only the "annotate everything" rules are off.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+
+# cli is a leaf module: nothing imports from it but the console-script entry
+# point and the tests, which patch a collaborator where cli looks it up
+# (cli.PBSClient) — the one correct place to patch it. Re-export hygiene buys
+# nothing here and would force the tests to patch the wrong module.
+[[tool.mypy.overrides]]
+module = "zpbs_backup.cli"
+implicit_reexport = true

@@ -1,4 +1,4 @@
-.PHONY: wheel packages deb rpm clean test
+.PHONY: wheel packages deb rpm clean test lint typecheck check
 
 VERSION := $(shell python3 -c "import re; f=open('src/zpbs_backup/__init__.py').read(); print(re.search(r'__version__\s*=\s*\"(.*?)\"', f).group(1))")
 
@@ -18,6 +18,14 @@ rpm:
 
 test:
 	pytest
+
+lint:
+	ruff check .
+
+typecheck:
+	mypy
+
+check: test lint typecheck
 
 clean:
 	rm -rf build/ dist/ src/*.egg-info

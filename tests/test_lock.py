@@ -14,7 +14,7 @@ import pytest
 from zpbs_backup.lock import EXIT_ALREADY_RUNNING, AlreadyRunning, run_lock
 
 
-def _holder_process(lock_path, src_dir) -> subprocess.Popen:
+def _holder_process(lock_path, src_dir) -> subprocess.Popen[str]:
     """Start a separate process that takes the lock and then waits."""
     script = textwrap.dedent(
         f"""
@@ -47,10 +47,8 @@ class TestRunLock:
     def test_a_second_acquisition_in_one_process_is_refused(self, tmp_path):
         lock_path = tmp_path / "run.lock"
 
-        with run_lock(lock_path):
-            with pytest.raises(AlreadyRunning):
-                with run_lock(lock_path):
-                    pass
+        with run_lock(lock_path), pytest.raises(AlreadyRunning), run_lock(lock_path):
+            pass
 
     def test_a_second_process_is_refused(self, tmp_path, src_dir):
         """The timer-driven and manual cases are two processes, not one."""
@@ -58,9 +56,8 @@ class TestRunLock:
         holder = _holder_process(lock_path, src_dir)
 
         try:
-            with pytest.raises(AlreadyRunning):
-                with run_lock(lock_path):
-                    pass
+            with pytest.raises(AlreadyRunning), run_lock(lock_path):
+                pass
         finally:
             holder.kill()
             holder.wait(timeout=10)

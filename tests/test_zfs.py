@@ -8,6 +8,11 @@ import pytest
 from zpbs_backup import zfs as zfs_mod
 from zpbs_backup.zfs import (
     DEFAULT_PRIORITY,
+    PROP_BACKUP,
+    PROP_NAMESPACE,
+    PROP_PRIORITY,
+    PROP_RETENTION,
+    PROP_SCHEDULE,
     Dataset,
     InvalidPropertyError,
     PropertyValue,
@@ -16,15 +21,10 @@ from zpbs_backup.zfs import (
     get_latest_snapshot_creation,
     get_written_bytes,
     validate_property_value,
-    PROP_BACKUP,
-    PROP_SCHEDULE,
-    PROP_RETENTION,
-    PROP_NAMESPACE,
-    PROP_PRIORITY,
 )
 
 
-def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
+def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["zfs"], returncode=returncode, stdout=stdout, stderr=""
     )
@@ -97,7 +97,7 @@ class TestDataset:
             },
         )
         with pytest.raises(InvalidPropertyError) as raised:
-            ds.schedule
+            _ = ds.schedule
 
         message = str(raised.value)
         assert "tank/data" in message
@@ -218,7 +218,7 @@ class TestValidatePropertyValue:
         assert error == ""
 
     def test_backup_valid_false(self):
-        valid, error = validate_property_value(PROP_BACKUP, "false")
+        valid, _ = validate_property_value(PROP_BACKUP, "false")
         assert valid
 
     def test_backup_invalid(self):
@@ -265,7 +265,7 @@ class TestValidatePropertyValue:
         assert valid
 
     def test_retention_invalid(self):
-        valid, error = validate_property_value(PROP_RETENTION, "invalid")
+        valid, _ = validate_property_value(PROP_RETENTION, "invalid")
         assert not valid
 
     def test_namespace_valid(self):
@@ -343,7 +343,7 @@ class TestInvalidPropertiesFailLoudly:
 
     def test_invalid_schedule_names_the_dataset_and_property(self):
         with pytest.raises(InvalidPropertyError) as raised:
-            self._ds(PROP_SCHEDULE, "hourly").schedule
+            _ = self._ds(PROP_SCHEDULE, "hourly").schedule
 
         message = str(raised.value)
         assert "tank/data" in message
@@ -352,7 +352,7 @@ class TestInvalidPropertiesFailLoudly:
 
     def test_invalid_priority_names_the_dataset_and_property(self):
         with pytest.raises(InvalidPropertyError) as raised:
-            self._ds(PROP_PRIORITY, "high").priority
+            _ = self._ds(PROP_PRIORITY, "high").priority
 
         message = str(raised.value)
         assert "tank/data" in message
@@ -362,7 +362,7 @@ class TestInvalidPropertiesFailLoudly:
         """zpbs-backup set enforces 1-100; zfs set does not."""
         for value in ("0", "101"):
             with pytest.raises(InvalidPropertyError):
-                self._ds(PROP_PRIORITY, value).priority
+                _ = self._ds(PROP_PRIORITY, value).priority
 
     def test_property_errors_collects_all_three(self):
         ds = Dataset(

@@ -6,7 +6,6 @@ from datetime import datetime, time, timedelta
 
 from .zfs import Schedule
 
-
 # Schedule intervals
 SCHEDULE_INTERVALS = {
     Schedule.DAILY: timedelta(hours=24),

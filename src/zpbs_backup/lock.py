@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import fcntl
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 # Lives in the state directory rather than /run: the systemd unit declares
 # RuntimeDirectory nowhere, and a runtime directory would be recreated under a

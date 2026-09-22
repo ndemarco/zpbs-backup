@@ -34,7 +34,7 @@ def _run(args, metrics_config, notify_config, lock_path):
          patch.object(metrics_mod, "push_to_gateway") as push, \
          patch.object(metrics_mod, "write_textfile") as textfile, \
          patch.object(notify_mod, "_send_via_mail", return_value=True) as mail:
-        result = runner.invoke(main, ["run"] + args)
+        result = runner.invoke(main, ["run", *args])
 
     return result, push, textfile, mail
 
@@ -106,11 +106,10 @@ class TestRunLocking:
     ):
         lock_path = tmp_path / "run.lock"
 
-        with run_lock(lock_path):
-            with patch.object(lock_mod, "LOCK_PATH", lock_path):
-                result, push, textfile, mail = _run(
-                    [], metrics_on, email_on, lock_path
-                )
+        with run_lock(lock_path), patch.object(lock_mod, "LOCK_PATH", lock_path):
+            result, push, textfile, mail = _run(
+                [], metrics_on, email_on, lock_path
+            )
 
         assert result.exit_code == EXIT_ALREADY_RUNNING
         assert "Not starting" in result.output

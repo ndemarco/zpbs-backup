@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import subprocess
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -25,13 +25,13 @@ from zpbs_backup.backup import (
 from zpbs_backup.config import PBSConfig
 from zpbs_backup.retention import DEFAULT_RETENTION
 from zpbs_backup.zfs import (
-    Dataset,
-    InvalidPropertyError,
-    PropertyValue,
     PROP_BACKUP,
     PROP_PRIORITY,
     PROP_RETENTION,
     PROP_SCHEDULE,
+    Dataset,
+    InvalidPropertyError,
+    PropertyValue,
 )
 
 
@@ -49,12 +49,18 @@ def _orch(force: bool = False) -> BackupOrchestrator:
     return BackupOrchestrator(config=config, force=force, output=io.StringIO())
 
 
+def _printed(orch: BackupOrchestrator) -> str:
+    """What the orchestrator wrote. _orch always hands it a StringIO."""
+    assert isinstance(orch.output, io.StringIO)
+    return orch.output.getvalue()
+
+
 class TestUnchangedSkipReason:
     """Tests for BackupOrchestrator._unchanged_skip_reason."""
 
     def test_skips_when_written_zero_and_snap_old_enough(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=timezone.utc)
+        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
         snap_creation = int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS - 1
         with patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
@@ -65,7 +71,7 @@ class TestUnchangedSkipReason:
 
     def test_no_skip_when_written_nonzero(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=timezone.utc)
+        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
         snap_creation = int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS - 1
         with patch.object(backup_mod, "get_written_bytes", return_value=12345), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
@@ -73,7 +79,7 @@ class TestUnchangedSkipReason:
 
     def test_no_skip_when_snap_within_safety_margin(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=timezone.utc)
+        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
         # Snap is exactly at the margin boundary — must NOT skip
         snap_creation = int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS + 1
         with patch.object(backup_mod, "get_written_bytes", return_value=0), \
@@ -82,7 +88,7 @@ class TestUnchangedSkipReason:
 
     def test_no_skip_when_snap_newer_than_last_backup(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=timezone.utc)
+        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
         snap_creation = int(last_backup.timestamp()) + 100  # after last backup
         with patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
@@ -96,7 +102,7 @@ class TestUnchangedSkipReason:
 
     def test_no_skip_when_no_snapshots_exist(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=timezone.utc)
+        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
         with patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
             assert orch._unchanged_skip_reason(_ds(), last_backup) is None
@@ -104,7 +110,7 @@ class TestUnchangedSkipReason:
     def test_no_skip_when_skew_check_failed(self):
         orch = _orch()
         orch.skip_unchanged_safe = False
-        last_backup = datetime.fromtimestamp(2_000_000, tz=timezone.utc)
+        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
         snap_creation = int(last_backup.timestamp()) - 1000
         with patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
@@ -171,14 +177,14 @@ class TestPreflightSkewCheck:
         with patch.object(orch.client, "get_clock_skew_seconds", return_value=30.0):
             orch._preflight_skew_check()
         assert orch.skip_unchanged_safe is True
-        assert "within" in orch.output.getvalue()
+        assert "within" in _printed(orch)
 
     def test_disables_when_skew_exceeds_margin(self):
         orch = _orch()
         with patch.object(orch.client, "get_clock_skew_seconds", return_value=120.0):
             orch._preflight_skew_check()
         assert orch.skip_unchanged_safe is False
-        assert "exceeds" in orch.output.getvalue()
+        assert "exceeds" in _printed(orch)
 
     def test_disables_when_skew_negative_exceeds_margin(self):
         orch = _orch()
@@ -191,7 +197,7 @@ class TestPreflightSkewCheck:
         with patch.object(orch.client, "get_clock_skew_seconds", return_value=None):
             orch._preflight_skew_check()
         assert orch.skip_unchanged_safe is False
-        assert "could not measure" in orch.output.getvalue()
+        assert "could not measure" in _printed(orch)
 
 
 class TestFailureMessage:
@@ -211,7 +217,9 @@ class TestFailureMessage:
         assert failure_message(result) == "Error: unable to open chunk store"
 
     def test_reports_exit_status_when_the_client_said_nothing(self):
-        result = subprocess.CompletedProcess(args=[], returncode=7, stdout=None, stderr=None)
+        result: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
+            args=[], returncode=7, stdout=None, stderr=None
+        )
         message = failure_message(result)
         assert message.strip()
         assert "7" in message
@@ -245,7 +253,7 @@ class TestBackupDatasetFailureReporting:
     def test_error_reaches_the_run_output(self):
         with self._failing_orchestrator("Error: unable to open chunk store") as orch:
             orch.backup_dataset(_ds())
-            printed = orch.output.getvalue()
+            printed = _printed(orch)
 
         assert "FAILED: Error: unable to open chunk store" in printed
         assert "FAILED: None" not in printed
@@ -303,7 +311,7 @@ class TestMisconfiguredDatasetsFailLoudly:
 
         error = summary.results[0].error
         assert error and "tank/data" in error and prop in error
-        assert "tank/data" in orch.output.getvalue()
+        assert "tank/data" in _printed(orch)
 
     def test_one_bad_dataset_does_not_stop_the_others(self):
         good = _ds_with(PROP_SCHEDULE, "weekly", name="tank/good")
@@ -341,16 +349,17 @@ class TestRetentionPolicyResolution:
 
     def test_prune_refuses_a_dataset_with_invalid_retention(self):
         """Pruning against a default policy would delete to a policy nobody set."""
+        printed = io.StringIO()
         pruner = PruneOrchestrator(
             config=PBSConfig(repository="u@p!t@srv:store", server="srv"),
-            output=io.StringIO(),
+            output=printed,
         )
 
         with patch.object(pruner.client, "prune") as prune_call:
             assert pruner.prune_dataset(_ds_with(PROP_RETENTION, "7 days")) is False
 
         prune_call.assert_not_called()
-        assert "Refusing to prune tank/data" in pruner.output.getvalue()
+        assert "Refusing to prune tank/data" in printed.getvalue()
 
 
 class TestSkipCauseAttribution:
@@ -420,6 +429,7 @@ class TestSkipCauseAttribution:
         result = orch.backup_dataset(ds)
 
         assert result.skip_cause is SkipCause.NOT_MOUNTED
+        assert result.skip_reason is not None
         assert "canmount=off" in result.skip_reason
 
 
