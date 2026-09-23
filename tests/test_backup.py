@@ -332,6 +332,104 @@ class TestMisconfiguredDatasetsFailLoudly:
         assert client_backup.call_count == 1
 
 
+class TestBackupOrchestratorRunEndToEnd:
+    """`run()` itself, not just its helpers: a real client failure and success."""
+
+    def test_a_failed_backup_is_reported_through_run(self):
+        orch = _orch()
+        ds = _ds()
+        failing = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Error: connection refused"
+        )
+        with patch.object(backup_mod, "discover_datasets", return_value=[ds]), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(orch.client, "get_last_backup_time", return_value=None), \
+             patch.object(orch.client, "create_namespace", return_value=True), \
+             patch.object(orch.client, "backup", return_value=failing):
+            summary = orch.run()
+
+        assert summary.failed == 1
+        assert summary.successful == 0
+        assert summary.results[0].error == "Error: connection refused"
+
+    def test_a_successful_backup_is_reported_through_run(self):
+        orch = _orch()
+        ds = _ds()
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(backup_mod, "discover_datasets", return_value=[ds]), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(orch.client, "get_last_backup_time", return_value=None), \
+             patch.object(orch.client, "create_namespace", return_value=True), \
+             patch.object(orch.client, "backup", return_value=ok):
+            summary = orch.run()
+
+        assert summary.successful == 1
+        assert summary.failed == 0
+
+
+class TestPruneOrchestratorRun:
+    """`PruneOrchestrator.run`: discovery, pattern filtering, and per-dataset counting."""
+
+    def _pruner(self) -> tuple[PruneOrchestrator, io.StringIO]:
+        printed = io.StringIO()
+        pruner = PruneOrchestrator(
+            config=PBSConfig(repository="u@p!t@srv:store", server="srv"),
+            output=printed,
+        )
+        return pruner, printed
+
+    def test_no_datasets_found(self):
+        pruner, printed = self._pruner()
+        with patch.object(backup_mod, "discover_datasets", return_value=[]):
+            counts = pruner.run()
+
+        assert counts == (0, 0)
+        assert "No datasets found" in printed.getvalue()
+
+    def test_a_client_failure_counts_as_failed_without_stopping_others(self):
+        pruner, printed = self._pruner()
+        good = _ds(name="tank/good")
+        bad = _ds(name="tank/bad")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        failing = subprocess.CompletedProcess(args=[], returncode=2, stdout="", stderr="locked")
+
+        def _prune_side_effect(**kwargs):
+            return failing if kwargs["backup_id"].endswith("bad") else ok
+
+        with patch.object(backup_mod, "discover_datasets", return_value=[bad, good]), \
+             patch.object(pruner.client, "prune", side_effect=_prune_side_effect) as prune_call:
+            counts = pruner.run()
+
+        assert counts == (1, 1)
+        assert prune_call.call_count == 2
+        assert "Prune complete: 1 succeeded, 1 failed" in printed.getvalue()
+
+    def test_an_invalid_retention_is_refused_without_reaching_the_client(self):
+        """The same guard prune_dataset uses on its own applies through run()."""
+        pruner, _ = self._pruner()
+        bad = _ds_with(PROP_RETENTION, "7 days")
+
+        with patch.object(backup_mod, "discover_datasets", return_value=[bad]), \
+             patch.object(pruner.client, "prune") as prune_call:
+            counts = pruner.run()
+
+        assert counts == (0, 1)
+        prune_call.assert_not_called()
+
+    def test_pattern_filters_datasets(self):
+        pruner, _ = self._pruner()
+        matching = _ds(name="tank/a")
+        other = _ds(name="pool/b")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with patch.object(backup_mod, "discover_datasets", return_value=[matching, other]), \
+             patch.object(pruner.client, "prune", return_value=ok) as prune_call:
+            counts = pruner.run(pattern="tank/*")
+
+        assert counts == (1, 0)
+        prune_call.assert_called_once()
+
+
 class TestRetentionPolicyResolution:
     """Tests for get_retention_policy."""
 
