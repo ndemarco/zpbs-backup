@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-23
+
 ### Added
 - Continuous integration on every pull request and every branch push (`.github/workflows/ci.yml`): the test suite, `ruff` and `mypy` each run as their own required check. Before this, a workflow existed only for tag pushes, so a pull request reported no checks at all. `ruff` and `mypy` are configured in `pyproject.toml`; the repository passes all three.
 - Configurable backup-id separator via `ZPBS_BACKUP_ID_SEPARATOR` (env or config file; default `-`). A multi-character separator such as `--` yields **reversible** backup-ids — you can recover the dataset path from the PBS group name by stripping the host and splitting on the separator — which the default `-` cannot guarantee, since `-` is also legal in ZFS dataset names (`pool/a-b` and `pool/a/b` both flatten to `pool-a-b`). The separator joins the hostname prefix too, so IDs split uniformly; it is validated against the PBS backup-id character set. Default behavior is unchanged.
