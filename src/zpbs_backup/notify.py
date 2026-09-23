@@ -1,9 +1,8 @@
-"""Email and syslog notification support."""
+"""Script-hook and syslog notification support."""
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import syslog
 from dataclasses import dataclass
@@ -16,7 +15,6 @@ class NotificationConfig:
     """Configuration for notifications."""
 
     enabled: bool = True
-    recipient: str | None = None
     # Path to external notification script (for compatibility)
     external_script: str | None = None
     # Syslog notification (for centralized logging)
@@ -29,7 +27,6 @@ def get_notification_config() -> NotificationConfig:
     Checks environment variables and common locations for config.
     """
     enabled = os.environ.get("ZPBS_NOTIFY", "true").lower() == "true"
-    recipient = os.environ.get("ZPBS_NOTIFY_EMAIL")
     syslog_enabled = os.environ.get("ZPBS_SYSLOG", "true").lower() == "true"
 
     # Check for external notification script
@@ -45,14 +42,13 @@ def get_notification_config() -> NotificationConfig:
 
     return NotificationConfig(
         enabled=enabled,
-        recipient=recipient,
         external_script=external_script,
         syslog_enabled=syslog_enabled,
     )
 
 
-def format_summary_for_email(summary: BackupSummary, hostname: str) -> tuple[str, str]:
-    """Format a backup summary for email notification.
+def format_summary_for_notification(summary: BackupSummary, hostname: str) -> tuple[str, str]:
+    """Format a backup summary for the notification hook.
 
     Args:
         summary: The backup summary
@@ -204,14 +200,10 @@ def send_notification(
     if config.syslog_enabled:
         _send_to_syslog(summary, hostname)
 
-    subject, body = format_summary_for_email(summary, hostname)
+    subject, body = format_summary_for_notification(summary, hostname)
 
-    # Try external script first (for compatibility with existing setups)
     if config.external_script:
         success = _send_via_external_script(config.external_script, subject, body, summary)
-    # Fall back to sendmail/mail
-    elif config.recipient:
-        success = _send_via_mail(config.recipient, subject, body)
 
     return success
 
@@ -246,39 +238,3 @@ def _send_via_external_script(
         return result.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
-
-
-def _send_via_mail(recipient: str, subject: str, body: str) -> bool:
-    """Send notification via sendmail or mail command."""
-    # Try sendmail first
-    sendmail = shutil.which("sendmail")
-    if sendmail:
-        message = f"To: {recipient}\nSubject: {subject}\n\n{body}"
-        try:
-            result = subprocess.run(
-                [sendmail, "-t"],
-                input=message,
-                text=True,
-                capture_output=True,
-                timeout=30,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    # Fall back to mail command
-    mail = shutil.which("mail")
-    if mail:
-        try:
-            result = subprocess.run(
-                [mail, "-s", subject, recipient],
-                input=body,
-                text=True,
-                capture_output=True,
-                timeout=30,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    return False

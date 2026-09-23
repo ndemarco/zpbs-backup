@@ -27,7 +27,7 @@ from .config import (
 )
 from .lock import EXIT_ALREADY_RUNNING, AlreadyRunning, run_lock
 from .metrics import report_metrics
-from .notify import format_summary_for_email, get_notification_config, send_notification
+from .notify import format_summary_for_notification, get_notification_config, send_notification
 from .pbs import PBSClient
 from .scheduler import format_last_backup, format_time_delta, is_backup_due, time_until_due
 from .zfs import (
@@ -209,7 +209,7 @@ SYSTEMD_UNIT = "zpbs-backup.service"
 @click.option("-n", "--dry-run", is_flag=True, help="Show what would be backed up without running")
 @click.option("-d", "--dataset", "pattern", help="Only backup datasets matching pattern")
 @click.option("-f", "--force", is_flag=True, help="Bypass schedule check")
-@click.option("--no-notify", is_flag=True, help="Disable email notification")
+@click.option("--no-notify", is_flag=True, help="Disable the notification hook")
 @click.option("-b", "--bg", is_flag=True, help="Run in background via systemd")
 @click.option(
     "--change-detection-mode",
@@ -265,7 +265,7 @@ def run(
 
     if not dry_run:
         # Metrics are independent of notifications: --no-notify silences
-        # email, not Prometheus.
+        # the hook, not Prometheus.
         report_metrics(summary, hostname)
 
         if not no_notify:
@@ -709,7 +709,7 @@ def _do_send_test_notification(show_only: bool) -> None:
         results=sample_results,
     )
 
-    subject, body = format_summary_for_email(sample_summary, hostname)
+    subject, body = format_summary_for_notification(sample_summary, hostname)
 
     click.echo(f"Subject: {subject}")
     click.echo("")
@@ -721,7 +721,6 @@ def _do_send_test_notification(show_only: bool) -> None:
     click.echo("-" * 40)
     click.echo("Notification config:")
     click.echo(f"  Enabled: {config.enabled}")
-    click.echo(f"  Recipient: {config.recipient or '(not set)'}")
     click.echo(f"  External script: {config.external_script or '(not found)'}")
     click.echo("")
 
@@ -729,9 +728,9 @@ def _do_send_test_notification(show_only: bool) -> None:
         click.echo("Notifications are disabled (ZPBS_NOTIFY=false)")
         return
 
-    if not config.external_script and not config.recipient:
+    if not config.external_script:
         click.echo("No notification method configured.")
-        click.echo("Set ZPBS_NOTIFY_EMAIL or install a script at:")
+        click.echo("Install a script at:")
         click.echo("  /usr/local/bin/zpbs-send-notification")
         sys.exit(1)
 
@@ -771,13 +770,11 @@ def notify_config() -> None:
 
     click.echo("Notification configuration:")
     click.echo(f"  Enabled:         {config.enabled}")
-    click.echo(f"  Recipient:       {config.recipient or '(not set)'}")
     click.echo(f"  External script: {config.external_script or '(not found)'}")
     click.echo("")
     click.echo("Environment variables:")
     notify_env = os.environ.get("ZPBS_NOTIFY", "(not set, defaults to true)")
-    click.echo(f"  ZPBS_NOTIFY       = {notify_env}")
-    click.echo(f"  ZPBS_NOTIFY_EMAIL = {os.environ.get('ZPBS_NOTIFY_EMAIL', '(not set)')}")
+    click.echo(f"  ZPBS_NOTIFY = {notify_env}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Tests for how a backup failure is reported to email and syslog."""
+"""Tests for how a backup failure is reported to the notification hook and syslog."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from zpbs_backup import notify as notify_mod
 from zpbs_backup.backup import BackupResult, BackupSummary
-from zpbs_backup.notify import _send_to_syslog, _syslog_error, format_summary_for_email
+from zpbs_backup.notify import _send_to_syslog, _syslog_error, format_summary_for_notification
 from zpbs_backup.zfs import PROP_BACKUP, Dataset, PropertyValue
 
 CLIENT_ERROR = "Error: unable to open chunk store\nCaused by: permission denied"
@@ -61,18 +61,18 @@ class TestSyslogRecord:
         assert 'error="None"' not in logged
 
 
-class TestEmailBody:
-    """The notification email body carries the client's text."""
+class TestNotificationBody:
+    """The notification body carries the client's text."""
 
     def test_failed_dataset_line_shows_the_error(self):
-        _subject, body = format_summary_for_email(_failed_summary(), "storage-server")
+        _subject, body = format_summary_for_notification(_failed_summary(), "storage-server")
 
         assert "unable to open chunk store" in body
         assert "permission denied" in body
         assert "tank/data: None" not in body
 
     def test_missing_error_does_not_print_none(self):
-        _subject, body = format_summary_for_email(_failed_summary(None), "storage-server")
+        _subject, body = format_summary_for_notification(_failed_summary(None), "storage-server")
 
         assert "tank/data: None" not in body
         assert "no error text reported" in body

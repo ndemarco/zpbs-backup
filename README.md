@@ -256,7 +256,7 @@ zpbs-backup run                      # Run all due backups
 zpbs-backup run -n                   # Show what would happen (--dry-run)
 zpbs-backup run -f                   # Ignore schedule, run all (--force)
 zpbs-backup run -d 'tank/*'         # Only matching datasets (--dataset)
-zpbs-backup run --no-notify          # Skip email notification
+zpbs-backup run --no-notify          # Skip the notification hook
 zpbs-backup run -b                   # Run in background via systemd (--bg)
 ```
 
@@ -444,18 +444,30 @@ zpbs-backup set namespace=production/data tank/files
 
 ## Notifications
 
-Email notifications are sent on backup completion. Configure via:
+zpbs-backup doesn't send mail. It tells you three ways, and you wire up whichever suits the box:
 
-- Environment: `ZPBS_NOTIFY_EMAIL=admin@example.com`
-- External script: `/usr/local/bin/pbs-send-notification` (for compatibility)
+- **syslog** — every run, to the journal. `journalctl -u zpbs-backup.service`.
+- **exit status** — non-zero when a dataset failed, so a systemd `OnFailure=` drop-in catches it. (Exit 75 means another run held the lock. That's a deferral, and the unit already treats it as success.)
+- **your own script** at `/usr/local/bin/zpbs-send-notification` — gets the summary on stdin, plus `ZPBS_SUBJECT`, `ZPBS_SUCCESSFUL`, `ZPBS_FAILED`, `ZPBS_SKIPPED` and `ZPBS_DURATION` in the environment. Send it wherever you like.
 
-Test and manage notifications:
+`ZPBS_NOTIFY=false` and `run --no-notify` still silence the hook. `zpbs-backup send-test-notification` still exercises it.
 
-```bash
-zpbs-backup send-test-notification   # Verify notification delivery
-zpbs-backup run --no-notify          # Skip notification for this run
-export ZPBS_NOTIFY=false             # Disable notifications globally
+### Coming from `ZPBS_NOTIFY_EMAIL`
+
+zpbs-backup emailing was out of scope and has been removed. The new way to email is via the hook:
+
+```sh
+#!/bin/sh
+# /usr/local/bin/zpbs-send-notification
+exec msmtp -t <<EOF
+To: admin@example.com
+Subject: $ZPBS_SUBJECT
+
+$(cat)
+EOF
 ```
+
+One thing worth knowing: `OnFailure=` fires when a run ran and failed. Nothing here catches a run that never started — a masked timer, a wedged host. For that you want something watching from outside, which is what the metrics below are for.
 
 ## Metrics
 
@@ -474,8 +486,9 @@ Both are unset by default (no-op). If neither is set, no metrics are
 reported.
 
 Metrics and notifications are independent. `ZPBS_NOTIFY=false` and
-`zpbs-backup run --no-notify` silence email only; metrics are still
-reported. Likewise, reporting no metrics does not affect email.
+`zpbs-backup run --no-notify` silence the notification hook only; metrics
+are still reported. Likewise, reporting no metrics does not affect
+notifications.
 
 Under the packaged systemd unit, `ProtectSystem=strict` means every writable
 path is declared explicitly. node_exporter's default collector directory,
