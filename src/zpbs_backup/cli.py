@@ -32,6 +32,7 @@ from .pbs import PBSClient
 from .scheduler import format_last_backup, format_time_delta, is_backup_due, time_until_due
 from .zfs import (
     ALL_PROPERTIES,
+    CHANGE_DETECTION_MODES,
     PROP_BACKUP,
     Dataset,
     discover_datasets,
@@ -99,6 +100,7 @@ def status(orphans: bool, json_output: bool) -> None:
                 "backup_enabled": ds.backup_enabled,
                 "schedule": ds.schedule.value if readable else None,
                 "priority": ds.priority if readable else None,
+                "change_detection": ds.change_detection_mode if readable else None,
                 "retention": ds.retention,
                 "namespace": namespace if ds.backup_enabled else None,
                 "last_backup": last_backup.isoformat() if last_backup else None,
@@ -213,9 +215,12 @@ SYSTEMD_UNIT = "zpbs-backup.service"
 @click.option("-b", "--bg", is_flag=True, help="Run in background via systemd")
 @click.option(
     "--change-detection-mode",
-    type=click.Choice(["legacy", "data", "metadata"]),
+    type=click.Choice(CHANGE_DETECTION_MODES),
     default=None,
-    help="Mode to detect file changes since last backup (default: PBS legacy)",
+    help=(
+        "Mode to detect file changes since last backup, overriding each "
+        "dataset's change-detection property for this run"
+    ),
 )
 def run(
     dry_run: bool,
@@ -527,15 +532,15 @@ def get_property_cmd(dataset: str, property: str) -> None:
 
     if property == "all":
         # Show all properties
-        click.echo(f"{'PROPERTY':<12}  {'VALUE':<15}  SOURCE")
-        click.echo("-" * 50)
+        click.echo(f"{'PROPERTY':<16}  {'VALUE':<15}  SOURCE")
+        click.echo("-" * 54)
         for prop_name in ALL_PROPERTIES:
             short_name = prop_name.removeprefix("zpbs:")
             prop = ds.properties.get(prop_name)
             if prop:
-                click.echo(f"{short_name:<12}  {prop.value:<15}  {prop.source}")
+                click.echo(f"{short_name:<16}  {prop.value:<15}  {prop.source}")
             else:
-                click.echo(f"{short_name:<12}  -")
+                click.echo(f"{short_name:<16}  -")
     else:
         # Normalize property name
         if not property.startswith("zpbs:"):
@@ -567,6 +572,7 @@ def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: 
     Examples:
         zpbs-backup set backup=true tank/data
         zpbs-backup set schedule=daily tank/data
+        zpbs-backup set change-detection=metadata tank/data
         zpbs-backup set backup=false --clear tank/data
     """
     if "=" not in property_value:

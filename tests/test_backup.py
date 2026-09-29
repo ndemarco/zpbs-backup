@@ -26,6 +26,7 @@ from zpbs_backup.config import PBSConfig
 from zpbs_backup.retention import DEFAULT_RETENTION
 from zpbs_backup.zfs import (
     PROP_BACKUP,
+    PROP_CHANGE_DETECTION,
     PROP_PRIORITY,
     PROP_RETENTION,
     PROP_SCHEDULE,
@@ -300,6 +301,7 @@ class TestMisconfiguredDatasetsFailLoudly:
             (PROP_SCHEDULE, "hourly"),
             (PROP_PRIORITY, "high"),
             (PROP_RETENTION, "7 days"),
+            (PROP_CHANGE_DETECTION, "fast"),
         ],
     )
     def test_invalid_property_is_a_failure_naming_dataset_and_property(self, prop, value):
@@ -330,6 +332,34 @@ class TestMisconfiguredDatasetsFailLoudly:
 
         assert summary.failed == 0
         assert client_backup.call_count == 1
+
+
+class TestChangeDetectionMode:
+    """The mode reaching proxmox-backup-client for each dataset."""
+
+    def _mode_passed(self, dataset, cli_mode=None):
+        orch = _orch()
+        orch.change_detection_mode = cli_mode
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(orch.client, "backup", return_value=completed) as client_backup, \
+             patch.object(orch.client, "create_namespace", return_value=True):
+            orch.backup_dataset(dataset)
+        return client_backup.call_args.kwargs["change_detection_mode"]
+
+    def test_property_reaches_the_client_without_a_flag(self):
+        """A scheduled run passes no flag; the property must still apply."""
+        ds = _ds_with(PROP_CHANGE_DETECTION, "metadata")
+        assert self._mode_passed(ds) == "metadata"
+
+    def test_command_line_flag_overrides_the_property(self):
+        ds = _ds_with(PROP_CHANGE_DETECTION, "metadata")
+        assert self._mode_passed(ds, cli_mode="legacy") == "legacy"
+
+    def test_command_line_flag_applies_to_a_dataset_without_the_property(self):
+        assert self._mode_passed(_ds(), cli_mode="data") == "data"
+
+    def test_neither_set_leaves_the_client_default(self):
+        assert self._mode_passed(_ds()) is None
 
 
 class TestBackupOrchestratorRunEndToEnd:
