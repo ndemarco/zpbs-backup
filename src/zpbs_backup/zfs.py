@@ -21,6 +21,7 @@ PROP_SCHEDULE = "zpbs:schedule"
 PROP_RETENTION = "zpbs:retention"
 PROP_NAMESPACE = "zpbs:namespace"
 PROP_PRIORITY = "zpbs:priority"
+PROP_CHANGE_DETECTION = "zpbs:change-detection"
 
 ALL_PROPERTIES = [
     PROP_BACKUP,
@@ -28,7 +29,11 @@ ALL_PROPERTIES = [
     PROP_RETENTION,
     PROP_NAMESPACE,
     PROP_PRIORITY,
+    PROP_CHANGE_DETECTION,
 ]
+
+# The values proxmox-backup-client accepts for --change-detection-mode.
+CHANGE_DETECTION_MODES = ("legacy", "data", "metadata")
 
 # Default values — these apply when a property is UNSET. A property that is
 # set but unreadable is an error, never a default: `zpbs-backup set` validates
@@ -156,6 +161,26 @@ class Dataset:
             return priority
         return DEFAULT_PRIORITY
 
+    @property
+    def change_detection_mode(self) -> str | None:
+        """Return the change-detection mode, or None to use the client default.
+
+        Raises:
+            InvalidPropertyError: If zpbs:change-detection is set to a mode
+                proxmox-backup-client does not accept
+        """
+        prop = self.properties.get(PROP_CHANGE_DETECTION)
+        if prop and prop.is_set:
+            if prop.value not in CHANGE_DETECTION_MODES:
+                raise InvalidPropertyError(
+                    self.name,
+                    PROP_CHANGE_DETECTION,
+                    prop.value,
+                    "one of " + ", ".join(CHANGE_DETECTION_MODES),
+                )
+            return prop.value
+        return None
+
     def property_errors(self) -> list[InvalidPropertyError]:
         """Return every zpbs property on this dataset that cannot be acted on.
 
@@ -166,7 +191,12 @@ class Dataset:
 
         errors: list[InvalidPropertyError] = []
 
-        for accessor in (lambda: self.schedule, lambda: self.priority):
+        accessors = (
+            lambda: self.schedule,
+            lambda: self.priority,
+            lambda: self.change_detection_mode,
+        )
+        for accessor in accessors:
             try:
                 accessor()
             except InvalidPropertyError as e:
@@ -452,6 +482,13 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
                 return False, f"{short} must be between 1 and 100, got {priority}"
         except ValueError:
             return False, f"{short} must be an integer, got '{value}'"
+
+    elif prop == PROP_CHANGE_DETECTION:
+        if value not in CHANGE_DETECTION_MODES:
+            return (
+                False,
+                f"{short} must be one of {list(CHANGE_DETECTION_MODES)}, got '{value}'",
+            )
 
     elif prop == PROP_RETENTION:
         # Basic validation - check format like "7d,4w,6m,1y"

@@ -9,6 +9,7 @@ from zpbs_backup import zfs as zfs_mod
 from zpbs_backup.zfs import (
     DEFAULT_PRIORITY,
     PROP_BACKUP,
+    PROP_CHANGE_DETECTION,
     PROP_NAMESPACE,
     PROP_PRIORITY,
     PROP_RETENTION,
@@ -116,6 +117,32 @@ class TestDataset:
             },
         )
         assert ds.priority == 10
+
+    def test_change_detection_unset_is_none(self):
+        """None leaves proxmox-backup-client on its own default."""
+        ds = Dataset(name="tank/data", properties={})
+        assert ds.change_detection_mode is None
+
+    @pytest.mark.parametrize("mode", ["legacy", "data", "metadata"])
+    def test_change_detection_set(self, mode):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_CHANGE_DETECTION: PropertyValue(value=mode, source="local"),
+            },
+        )
+        assert ds.change_detection_mode == mode
+
+    def test_change_detection_inherited(self):
+        ds = Dataset(
+            name="tank/data/child",
+            properties={
+                PROP_CHANGE_DETECTION: PropertyValue(
+                    value="metadata", source="inherited from tank/data"
+                ),
+            },
+        )
+        assert ds.change_detection_mode == "metadata"
 
     def test_pool(self):
         ds = Dataset(name="tank/data/files", properties={})
@@ -282,6 +309,17 @@ class TestValidatePropertyValue:
         assert not valid
         assert "alphanumeric" in error
 
+    def test_change_detection_valid(self):
+        for mode in ("legacy", "data", "metadata"):
+            valid, _ = validate_property_value(PROP_CHANGE_DETECTION, mode)
+            assert valid
+
+    def test_change_detection_invalid(self):
+        valid, error = validate_property_value(PROP_CHANGE_DETECTION, "fast")
+        assert not valid
+        assert "change-detection" in error
+        assert "metadata" in error
+
     def test_unknown_property(self):
         valid, error = validate_property_value("other:prop", "value")
         assert not valid
@@ -358,6 +396,15 @@ class TestInvalidPropertiesFailLoudly:
         assert "tank/data" in message
         assert PROP_PRIORITY in message
 
+    def test_invalid_change_detection_names_the_dataset_and_property(self):
+        with pytest.raises(InvalidPropertyError) as raised:
+            _ = self._ds(PROP_CHANGE_DETECTION, "fast").change_detection_mode
+
+        message = str(raised.value)
+        assert "tank/data" in message
+        assert PROP_CHANGE_DETECTION in message
+        assert "metadata" in message  # names the accepted values
+
     def test_out_of_range_priority_is_also_invalid(self):
         """zpbs-backup set enforces 1-100; zfs set does not."""
         for value in ("0", "101"):
@@ -372,11 +419,17 @@ class TestInvalidPropertiesFailLoudly:
                 PROP_SCHEDULE: PropertyValue(value="hourly", source="local"),
                 PROP_PRIORITY: PropertyValue(value="high", source="local"),
                 PROP_RETENTION: PropertyValue(value="7 days", source="local"),
+                PROP_CHANGE_DETECTION: PropertyValue(value="fast", source="local"),
             },
         )
 
         reported = {e.prop for e in ds.property_errors()}
-        assert reported == {PROP_SCHEDULE, PROP_PRIORITY, PROP_RETENTION}
+        assert reported == {
+            PROP_SCHEDULE,
+            PROP_PRIORITY,
+            PROP_RETENTION,
+            PROP_CHANGE_DETECTION,
+        }
 
     def test_property_errors_is_empty_for_a_clean_dataset(self):
         ds = Dataset(

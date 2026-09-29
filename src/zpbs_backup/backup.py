@@ -148,6 +148,8 @@ class BackupOrchestrator:
         self.hostname = get_hostname()
         self.dry_run = dry_run
         self.force = force
+        # A run-wide mode from the command line; when None, each dataset's
+        # zpbs:change-detection property decides.
         self.change_detection_mode = change_detection_mode
         self._progress_callback: Callable[[str], None] | None = None
         self.skip_unchanged_safe: bool = True
@@ -363,7 +365,9 @@ class BackupOrchestrator:
             backup_id=backup_id,
             source_path=mountpoint,
             namespace=namespace,
-            change_detection_mode=self.change_detection_mode,
+            change_detection_mode=(
+                self.change_detection_mode or dataset.change_detection_mode
+            ),
             dry_run=self.dry_run,
         )
 

@@ -207,6 +207,7 @@ zpbs-backup run --force
 | `zpbs:retention` | `7d,4w,6m,1y` | `7d,4w,6m,1y` | Retention policy |
 | `zpbs:namespace` | string | auto-derived | PBS namespace |
 | `zpbs:priority` | 1-100 | 50 | Lower = backup first |
+| `zpbs:change-detection` | `legacy` / `data` / `metadata` | client default (`legacy`) | How `proxmox-backup-client` finds changed files |
 
 ### Inheritance
 
@@ -258,7 +259,23 @@ zpbs-backup run -f                   # Ignore schedule, run all (--force)
 zpbs-backup run -d 'tank/*'         # Only matching datasets (--dataset)
 zpbs-backup run --no-notify          # Skip the notification hook
 zpbs-backup run -b                   # Run in background via systemd (--bg)
+zpbs-backup run --change-detection-mode metadata  # Override every dataset's mode
 ```
+
+`zpbs:change-detection` chooses how `proxmox-backup-client` finds what changed
+since the previous backup. `legacy` reads and hashes every file on every run.
+`metadata` compares file metadata against the previous snapshot and rereads
+only files that differ, which is much faster on large, rarely modified
+datasets; `data` writes the same split archive format but still reads
+everything. The first `metadata` run after switching has no split-archive
+snapshot to compare with, so it reads everything once. Set it per dataset so
+scheduled runs use it:
+
+```bash
+zpbs-backup set change-detection=metadata tank/media
+```
+
+`--change-detection-mode` on `run` overrides the property for that run only.
 
 A run skips any due dataset where ZFS reports `written=0` and the most recent
 snapshot is at least 60s older than the last successful backup. The skip is
@@ -321,6 +338,7 @@ zpbs-backup get tank/data backup
 # Set properties
 zpbs-backup set backup=true tank/data
 zpbs-backup set schedule=weekly tank/data
+zpbs-backup set change-detection=metadata tank/data
 
 # Clear properties (inherit from parent)
 zpbs-backup inherit schedule tank/data

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `zpbs:change-detection` ZFS property (`legacy`, `data` or `metadata`), passed to `proxmox-backup-client` as `--change-detection-mode` for that dataset. Scheduled runs now honour a change-detection mode; before this, the mode could be set only with `run --change-detection-mode`, which the systemd timer never passes ([#1](https://github.com/ndemarco/zpbs-backup/issues/1)). The command-line flag still works and overrides the property for that run. A malformed value set with raw `zfs set` is reported and that dataset excluded, like the other zpbs properties. `status --json` gains a `change_detection` field.
+
 ## [0.10.0] - 2026-09-23
 
 ### Added
