@@ -96,12 +96,6 @@ class TestRunLock:
         with run_lock(lock_path):
             assert lock_path.exists()
 
-    def test_the_holding_pid_is_recorded(self, tmp_path):
-        lock_path = tmp_path / "run.lock"
-
-        with run_lock(lock_path):
-            assert lock_path.read_text().strip() == str(os.getpid())
-
     def test_the_descriptor_is_not_inherited_by_children(self, tmp_path, src_dir):
         """A child outliving the run must not keep the lock held."""
         lock_path = tmp_path / "run.lock"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime
@@ -110,6 +109,7 @@ def status(orphans: bool, json_output: bool) -> None:
                     else None
                 ),
                 "property_errors": [str(e) for e in errors],
+                "unknown_properties": ds.unknown_properties,
             })
 
         click.echo(json.dumps(output_data, indent=2))
@@ -131,6 +131,7 @@ def status(orphans: bool, json_output: bool) -> None:
     click.echo("-" * (name_width + 60))
 
     property_errors = []
+    unknown = {ds.name: ds.unknown_properties for ds in datasets if ds.unknown_properties}
 
     for ds in datasets:
         backup = "yes" if ds.backup_enabled else "no"
@@ -171,6 +172,12 @@ def status(orphans: bool, json_output: bool) -> None:
         click.echo("Invalid properties:")
         for error in property_errors:
             click.echo(f"  {error}")
+
+    if unknown:
+        click.echo("")
+        click.echo("Unknown properties (ignored by zpbs-backup):")
+        for name, props in unknown.items():
+            click.echo(f"  {name}: {', '.join(props)}")
 
     if orphans:
         click.echo("")
@@ -273,8 +280,8 @@ def run(
         # the hook, not Prometheus.
         report_metrics(summary, hostname)
 
-        if not no_notify:
-            send_notification(summary, hostname)
+        # --no-notify silences the hook only; syslog follows ZPBS_SYSLOG.
+        send_notification(summary, hostname, run_hook=not no_notify)
 
     # Exit with error if any failures
     if summary.failed > 0:
@@ -560,7 +567,7 @@ def get_property_cmd(dataset: str, property: str) -> None:
     "-c",
     "--clear",
     is_flag=True,
-    help="When setting backup=false, also clear all properties",
+    help="When setting backup=false, also clear every local zpbs property",
 )
 @click.option("-r", "--recursive", is_flag=True, help="Apply recursively to descendants")
 def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: bool) -> None:
@@ -748,39 +755,6 @@ def _do_send_test_notification(show_only: bool) -> None:
     else:
         click.echo("Failed to send notification.", err=True)
         sys.exit(1)
-
-
-# --- Deprecated 'notify' group (hidden, prints deprecation warning) ---
-
-@main.group(hidden=True)
-def notify() -> None:
-    """Notification management commands (deprecated)."""
-    click.echo(
-        "Warning: 'zpbs-backup notify' is deprecated. "
-        "Use 'zpbs-backup send-test-notification' or 'zpbs-backup show-config' instead.",
-        err=True,
-    )
-
-
-@notify.command("test")
-@click.option("--show-only", is_flag=True, help="Only show the message, don't send")
-def notify_test(show_only: bool) -> None:
-    """Send a test notification (deprecated: use send-test-notification)."""
-    _do_send_test_notification(show_only)
-
-
-@notify.command("config")
-def notify_config() -> None:
-    """Show notification configuration (deprecated: use show-config)."""
-    config = get_notification_config()
-
-    click.echo("Notification configuration:")
-    click.echo(f"  Enabled:         {config.enabled}")
-    click.echo(f"  External script: {config.external_script or '(not found)'}")
-    click.echo("")
-    click.echo("Environment variables:")
-    notify_env = os.environ.get("ZPBS_NOTIFY", "(not set, defaults to true)")
-    click.echo(f"  ZPBS_NOTIFY = {notify_env}")
 
 
 if __name__ == "__main__":

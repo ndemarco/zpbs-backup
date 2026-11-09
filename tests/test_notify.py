@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from zpbs_backup import notify as notify_mod
 from zpbs_backup.backup import BackupResult, BackupSummary
-from zpbs_backup.notify import _send_to_syslog, _syslog_error, format_summary_for_notification
+from zpbs_backup.notify import (
+    NotificationConfig,
+    _send_to_syslog,
+    _syslog_error,
+    format_summary_for_notification,
+    send_notification,
+)
 from zpbs_backup.zfs import PROP_BACKUP, Dataset, PropertyValue
 
 CLIENT_ERROR = "Error: unable to open chunk store\nCaused by: permission denied"
@@ -76,3 +84,35 @@ class TestNotificationBody:
 
         assert "tank/data: None" not in body
         assert "no error text reported" in body
+
+
+class TestSyslogIsIndependentOfTheHook:
+    """ZPBS_SYSLOG controls syslog; ZPBS_NOTIFY and --no-notify control the hook."""
+
+    @pytest.mark.parametrize("syslog_on", [True, False])
+    @pytest.mark.parametrize("notify_on", [True, False])
+    @pytest.mark.parametrize("run_hook", [True, False])
+    def test_each_combination(self, syslog_on, notify_on, run_hook):
+        config = NotificationConfig(
+            enabled=notify_on,
+            external_script="/usr/local/bin/zpbs-send-notification",
+            syslog_enabled=syslog_on,
+        )
+        with patch.object(notify_mod, "_send_to_syslog") as to_syslog, \
+             patch.object(notify_mod, "_send_via_external_script", return_value=True) as hook:
+            assert send_notification(_failed_summary(), "host", config, run_hook=run_hook)
+
+        assert to_syslog.called is syslog_on
+        assert hook.called is (notify_on and run_hook)
+
+    def test_unknown_properties_are_warned_to_syslog(self):
+        summary = _failed_summary()
+        summary.unknown_properties = {"tank/typo": ["zpbs:backups"]}
+        with patch.object(notify_mod, "syslog") as syslog:
+            syslog.LOG_WARNING = 4
+            assert _send_to_syslog(summary, "host") is True
+
+        warned = [c for c in syslog.syslog.call_args_list if c.args[0] == 4]
+        assert len(warned) == 1
+        assert "dataset=tank/typo" in warned[0].args[1]
+        assert "property=zpbs:backups" in warned[0].args[1]

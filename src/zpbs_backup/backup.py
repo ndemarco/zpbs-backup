@@ -20,6 +20,8 @@ from .zfs import (
     Dataset,
     InvalidPropertyError,
     discover_datasets,
+    enabled_datasets,
+    get_all_datasets,
     get_latest_snapshot_creation,
     get_written_bytes,
 )
@@ -75,6 +77,9 @@ class BackupResult:
     skip_cause: SkipCause | None = None
     error: str | None = None
     duration_seconds: float = 0.0
+    # Start time of the backup snapshot this run created; None unless a real
+    # backup succeeded.
+    backup_time: datetime | None = None
 
 
 class PlannedDataset(NamedTuple):
@@ -84,6 +89,8 @@ class PlannedDataset(NamedTuple):
     should_backup: bool
     skip_reason: str | None = None
     skip_cause: SkipCause | None = None
+    # Newest snapshot of this dataset on the backup server before the run.
+    last_backup: datetime | None = None
 
 
 @dataclass
@@ -91,6 +98,12 @@ class BackupSummary:
     """Summary of a backup run."""
 
     results: list[BackupResult] = field(default_factory=list)
+    # Newest snapshot time on the backup server per dataset name, after this
+    # run. A dataset with no snapshot is absent.
+    last_backup_times: dict[str, datetime] = field(default_factory=dict)
+    # Unrecognised locally set zpbs properties per dataset name; only
+    # datasets that have any are present.
+    unknown_properties: dict[str, list[str]] = field(default_factory=dict)
     start_time: datetime = field(default_factory=datetime.now)
     end_time: datetime | None = None
 
@@ -153,6 +166,7 @@ class BackupOrchestrator:
         self.change_detection_mode = change_detection_mode
         self._progress_callback: Callable[[str], None] | None = None
         self.skip_unchanged_safe: bool = True
+        self.unknown_properties: dict[str, list[str]] = {}
 
     def set_progress_callback(self, callback: Callable[[str], None]) -> None:
         """Set a callback for progress updates."""
@@ -173,7 +187,15 @@ class BackupOrchestrator:
         Returns:
             List of datasets sorted by priority
         """
-        datasets = discover_datasets()
+        all_datasets = get_all_datasets()
+
+        # Typos such as zpbs:backups are inert, so report them for every
+        # dataset, not only the ones being backed up.
+        self.unknown_properties = {
+            ds.name: ds.unknown_properties for ds in all_datasets if ds.unknown_properties
+        }
+
+        datasets = enabled_datasets(all_datasets)
 
         if pattern:
             datasets = [ds for ds in datasets if fnmatch.fnmatch(ds.name, pattern)]
@@ -226,27 +248,32 @@ class BackupOrchestrator:
         plan = []
 
         for ds in datasets:
-            if self.force:
-                plan.append(PlannedDataset(ds, True))
-                continue
-
             backup_id = ds.get_backup_id(self.hostname, self.config.backup_id_separator)
             namespace = ds.namespace or ds.get_auto_namespace(self.hostname)
+            # Fetched even under --force: the per-dataset freshness metric
+            # needs it, and it is the only server call plan() makes.
             last_backup = self.client.get_last_backup_time(backup_id, namespace)
+
+            if self.force:
+                plan.append(PlannedDataset(ds, True, last_backup=last_backup))
+                continue
 
             if not is_backup_due(ds.schedule, last_backup):
                 reason = f"not due (last: {format_last_backup(last_backup)})"
-                plan.append(PlannedDataset(ds, False, reason, SkipCause.NOT_DUE))
+                plan.append(PlannedDataset(ds, False, reason, SkipCause.NOT_DUE, last_backup)
+                )
                 continue
 
             unchanged_reason = self._unchanged_skip_reason(ds, last_backup)
             if unchanged_reason is not None:
                 plan.append(
-                    PlannedDataset(ds, False, unchanged_reason, SkipCause.UNCHANGED)
+                    PlannedDataset(
+                        ds, False, unchanged_reason, SkipCause.UNCHANGED, last_backup
+                    )
                 )
                 continue
 
-            plan.append(PlannedDataset(ds, True))
+            plan.append(PlannedDataset(ds, True, last_backup=last_backup))
 
         return plan
 
@@ -379,6 +406,7 @@ class BackupOrchestrator:
                 dataset=dataset,
                 success=True,
                 duration_seconds=duration,
+                backup_time=start_time,
             )
         else:
             error = failure_message(result)
@@ -402,6 +430,10 @@ class BackupOrchestrator:
         summary = BackupSummary(start_time=datetime.now())
 
         datasets = self.discover(pattern)
+        summary.unknown_properties = self.unknown_properties
+        for name, props in self.unknown_properties.items():
+            self._log(f"Warning: {name} has unknown zpbs properties: {', '.join(props)}")
+
         if not datasets:
             self._log("No datasets found with zpbs:backup=true")
             summary.end_time = datetime.now()
@@ -417,7 +449,10 @@ class BackupOrchestrator:
         if self.dry_run:
             self._log("[DRY-RUN MODE]")
 
-        for dataset, should_backup, skip_reason, skip_cause in plan:
+        for dataset, should_backup, skip_reason, skip_cause, last_backup in plan:
+            if last_backup is not None:
+                summary.last_backup_times[dataset.name] = last_backup
+
             if not should_backup:
                 self._log(f"Skipping {dataset.name}: {skip_reason}")
                 summary.results.append(
@@ -432,6 +467,8 @@ class BackupOrchestrator:
             else:
                 result = self.backup_dataset(dataset)
                 summary.results.append(result)
+                if result.backup_time is not None:
+                    summary.last_backup_times[dataset.name] = result.backup_time
 
         summary.end_time = datetime.now()
 

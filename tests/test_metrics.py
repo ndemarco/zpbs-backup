@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import os
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
-
-import pytest
 
 from zpbs_backup import metrics as metrics_mod
 from zpbs_backup.backup import SkipCause
 from zpbs_backup.metrics import (
     MetricsConfig,
+    _render_metrics,
     get_metrics_config,
     push_to_gateway,
     report_metrics,
@@ -21,7 +21,8 @@ from zpbs_backup.metrics import (
 
 METRIC_NAMES = (
     "zpbs_backup_last_run_timestamp_seconds",
-    "zpbs_backup_last_success_timestamp_seconds",
+    "zpbs_backup_dataset_last_backup_timestamp_seconds",
+    "zpbs_backup_unknown_properties",
     "zpbs_backup_duration_seconds",
     "zpbs_backup_datasets_successful",
     "zpbs_backup_datasets_failed",
@@ -30,7 +31,15 @@ METRIC_NAMES = (
 )
 
 
-def _summary(successful=0, failed=0, skipped=0, duration=0.0, skipped_by_cause=None):
+def _summary(
+    successful=0,
+    failed=0,
+    skipped=0,
+    duration=0.0,
+    skipped_by_cause=None,
+    last_backup_times=None,
+    unknown_properties=None,
+):
     """Build a minimal stand-in for BackupSummary (metrics only reads these fields)."""
     counts = {cause: 0 for cause in SkipCause}
     counts.update(skipped_by_cause or {})
@@ -41,26 +50,17 @@ def _summary(successful=0, failed=0, skipped=0, duration=0.0, skipped_by_cause=N
         skipped=skipped,
         duration_seconds=duration,
         skipped_by_cause=counts,
+        last_backup_times=last_backup_times or {},
+        unknown_properties=unknown_properties or {},
     )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_state_file(tmp_path_factory, monkeypatch):
-    """Never touch the real /var/lib/zpbs-backup/state.json from tests.
-
-    Uses a directory outside the per-test tmp_path, so it never shows up as
-    a stray file in tests that assert on a textfile_dir's own contents.
-    """
-    state_dir = tmp_path_factory.mktemp("zpbs-state")
-    monkeypatch.setattr(metrics_mod, "STATE_FILE", state_dir / "state.json")
 
 
 class TestPushToGateway:
     def test_noop_when_url_missing(self):
         summary = _summary(successful=1)
         # No exception, no attempt to open urllib — url is falsy.
-        push_to_gateway(summary, "host1", None)
-        push_to_gateway(summary, "host1", "")
+        push_to_gateway(_render_metrics(summary), "host1", None)
+        push_to_gateway(_render_metrics(summary), "host1", "")
 
     def test_puts_every_metric_to_gateway_url(self):
         summary = _summary(successful=2, failed=1, skipped=0, duration=5.0)
@@ -80,7 +80,7 @@ class TestPushToGateway:
             return _FakeResponse()
 
         with mock.patch("zpbs_backup.metrics.urllib.request.urlopen", side_effect=fake_urlopen):
-            push_to_gateway(summary, "storage-server", "http://10.0.16.16:9091")
+            push_to_gateway(_render_metrics(summary), "storage-server", "http://10.0.16.16:9091")
 
         assert captured["url"] == (
             "http://10.0.16.16:9091/metrics/job/zpbs_backup/instance/storage-server"
@@ -97,20 +97,20 @@ class TestPushToGateway:
             "zpbs_backup.metrics.urllib.request.urlopen",
             side_effect=OSError("connection refused"),
         ):
-            push_to_gateway(summary, "host1", "http://10.0.16.16:9091")
+            push_to_gateway(_render_metrics(summary), "host1", "http://10.0.16.16:9091")
         assert "zpbs-backup metrics: push failed" in capsys.readouterr().err
 
 
 class TestWriteTextfile:
     def test_noop_when_dir_missing(self, tmp_path):
         summary = _summary(successful=1)
-        write_textfile(summary, None)
-        write_textfile(summary, "")
+        write_textfile(_render_metrics(summary), None)
+        write_textfile(_render_metrics(summary), "")
         assert list(tmp_path.iterdir()) == []
 
     def test_writes_the_same_metrics_as_pushgateway(self, tmp_path):
         summary = _summary(successful=3, failed=0, skipped=1, duration=12.5)
-        write_textfile(summary, str(tmp_path))
+        write_textfile(_render_metrics(summary), str(tmp_path))
 
         dest = tmp_path / "zpbs_backup.prom"
         assert dest.exists()
@@ -127,7 +127,7 @@ class TestWriteTextfile:
         with mock.patch(
             "zpbs_backup.metrics.os.replace", wraps=os.replace
         ) as mock_replace:
-            write_textfile(summary, str(tmp_path))
+            write_textfile(_render_metrics(summary), str(tmp_path))
 
         assert mock_replace.call_count == 1
         src, dst = mock_replace.call_args[0]
@@ -140,7 +140,7 @@ class TestWriteTextfile:
         assert leftovers == []
 
     def test_file_is_world_readable(self, tmp_path):
-        write_textfile(_summary(successful=1), str(tmp_path))
+        write_textfile(_render_metrics(_summary(successful=1)), str(tmp_path))
 
         mode = (tmp_path / "zpbs_backup.prom").stat().st_mode & 0o777
         assert mode == 0o644
@@ -149,7 +149,7 @@ class TestWriteTextfile:
         summary = _summary(successful=1)
         missing_dir = tmp_path / "does-not-exist"
 
-        write_textfile(summary, str(missing_dir))
+        write_textfile(_render_metrics(summary), str(missing_dir))
 
         assert not missing_dir.exists()
         assert "zpbs-backup metrics: textfile write failed" in capsys.readouterr().err
@@ -161,7 +161,7 @@ class TestWriteTextfile:
             "zpbs_backup.metrics.tempfile.mkstemp",
             side_effect=PermissionError("Permission denied"),
         ):
-            write_textfile(summary, str(tmp_path))
+            write_textfile(_render_metrics(summary), str(tmp_path))
 
         assert "zpbs-backup metrics: textfile write failed" in capsys.readouterr().err
         assert list(tmp_path.iterdir()) == []
@@ -211,10 +211,54 @@ class TestReportMetrics:
         with mock.patch.object(metrics_mod, "push_to_gateway") as push:
             report_metrics(summary, "storage-server", config)
 
-        push.assert_called_once_with(summary, "storage-server", config.pushgateway_url)
-        assert (tmp_path / "zpbs_backup.prom").exists()
+        payload, host, url = push.call_args[0]
+        assert (host, url) == ("storage-server", config.pushgateway_url)
+        # Rendered once: the textfile holds exactly what the gateway gets.
+        assert (tmp_path / "zpbs_backup.prom").read_bytes() == payload
 
     def test_is_a_noop_when_nothing_is_configured(self, tmp_path):
         report_metrics(_summary(successful=1), "storage-server", MetricsConfig())
 
         assert list(tmp_path.iterdir()) == []
+
+
+class TestPerDatasetSeries:
+    """Per-dataset freshness and unknown-property series."""
+
+    def test_no_last_success_series_remains(self):
+        body = _render_metrics(_summary(successful=1)).decode()
+
+        assert "last_success" not in body
+
+    def test_freshness_has_one_series_per_dataset(self):
+        when = datetime(2026, 11, 8, 3, 0, tzinfo=UTC)
+        body = _render_metrics(
+            _summary(successful=1, last_backup_times={"tank/data": when})
+        ).decode()
+
+        assert "# TYPE zpbs_backup_dataset_last_backup_timestamp_seconds gauge" in body
+        assert (
+            'zpbs_backup_dataset_last_backup_timestamp_seconds{dataset="tank/data"} '
+            f"{when.timestamp()}"
+        ) in body
+
+    def test_dataset_without_a_snapshot_has_no_series(self):
+        body = _render_metrics(_summary(successful=1)).decode()
+
+        assert "# HELP zpbs_backup_dataset_last_backup_timestamp_seconds" in body
+        assert "zpbs_backup_dataset_last_backup_timestamp_seconds{" not in body
+
+    def test_unknown_properties_count_only_datasets_that_have_some(self):
+        body = _render_metrics(
+            _summary(unknown_properties={"tank/odd": ["zpbs:foo", "zpbs:bar"]})
+        ).decode()
+
+        assert 'zpbs_backup_unknown_properties{dataset="tank/odd"} 2' in body
+        assert body.count("zpbs_backup_unknown_properties{") == 1
+
+    def test_label_values_are_escaped(self):
+        body = _render_metrics(
+            _summary(unknown_properties={'tank/a"b': ["zpbs:x"]})
+        ).decode()
+
+        assert 'dataset="tank/a\\"b"' in body

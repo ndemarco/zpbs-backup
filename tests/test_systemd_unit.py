@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from zpbs_backup.lock import EXIT_ALREADY_RUNNING, LOCK_PATH
-from zpbs_backup.metrics import STATE_FILE
 
 UNIT_PATH = Path(__file__).resolve().parent.parent / "systemd" / "zpbs-backup.service"
 STATE_DIR = Path("/var/lib/zpbs-backup")
@@ -52,9 +51,6 @@ class TestUnitCanWriteItsOutputs:
     def test_the_state_directory_is_declared(self, service):
         """StateDirectory creates and unlocks /var/lib/zpbs-backup."""
         assert service["StateDirectory"] == ["zpbs-backup"]
-
-    def test_the_state_file_lives_under_the_state_directory(self):
-        assert STATE_FILE.parent == STATE_DIR
 
     def test_the_lock_lives_under_the_state_directory(self):
         assert LOCK_PATH.parent == STATE_DIR

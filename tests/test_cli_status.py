@@ -60,3 +60,47 @@ class TestStatusWithAnInvalidProperty:
         assert entry["priority"] is None
         assert entry["backup_due"] is None
         assert any("zpbs:schedule" in e for e in entry["property_errors"])
+
+
+class TestStatusListsUnknownProperties:
+    def _dataset(self):
+        return Dataset(
+            name="tank/typo",
+            properties={
+                PROP_BACKUP: PropertyValue(value="true", source="local"),
+                "zpbs:foo": PropertyValue(value="1", source="local"),
+            },
+            mountpoint="/tank/typo",
+            mounted=True,
+        )
+
+    def test_table_names_the_dataset_and_property(self):
+        result = _invoke(["status"], self._dataset())
+
+        assert "Unknown properties" in result.output
+        assert "tank/typo: zpbs:foo" in result.output
+
+    def test_json_carries_the_unknown_properties(self):
+        result = _invoke(["status", "--json"], self._dataset())
+
+        assert json.loads(result.output)[0]["unknown_properties"] == ["zpbs:foo"]
+
+
+class TestSetRejectsUnknownProperties:
+    def test_an_unknown_name_is_refused_before_any_zfs_call(self):
+        runner = CliRunner()
+        with patch.object(cli_mod, "set_property") as setter:
+            result = runner.invoke(main, ["set", "foo=1", "tank/data"])
+
+        assert result.exit_code == 1
+        assert "Unknown property" in result.output
+        assert "schedule" in result.output
+        setter.assert_not_called()
+
+    def test_a_known_name_is_still_set(self):
+        runner = CliRunner()
+        with patch.object(cli_mod, "set_property") as setter:
+            result = runner.invoke(main, ["set", "schedule=weekly", "tank/data"])
+
+        assert result.exit_code == 0
+        setter.assert_called_once_with("tank/data", "zpbs:schedule", "weekly")

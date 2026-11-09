@@ -125,12 +125,14 @@ class TestPlanScheduleCheck:
         """--force backs up regardless of when the last backup ran."""
         orch = _orch(force=True)
         ds = _ds()
+        last = datetime(2026, 11, 8, 3, 0)
         with patch.object(backup_mod, "is_backup_due") as is_due, \
-             patch.object(orch.client, "get_last_backup_time") as last_backup:
+             patch.object(orch.client, "get_last_backup_time", return_value=last) as last_backup:
             plan = orch.plan([ds])
         is_due.assert_not_called()
-        last_backup.assert_not_called()
-        assert plan == [PlannedDataset(ds, True)]
+        # The newest snapshot is still read once, for the freshness metric.
+        last_backup.assert_called_once()
+        assert plan == [PlannedDataset(ds, True, last_backup=last)]
 
     def test_daily_dataset_stamped_after_midnight_is_planned_next_day(self):
         """A dataset a long run stamped at 03:20 is planned the following day."""
@@ -141,7 +143,7 @@ class TestPlanScheduleCheck:
              patch.object(backup_mod, "get_written_bytes", return_value=12345), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
             plan = orch.plan([ds])
-        assert plan == [PlannedDataset(ds, True)]
+        assert plan == [PlannedDataset(ds, True, last_backup=stamped_late)]
 
     def test_daily_dataset_already_backed_up_today_is_skipped(self):
         """A dataset backed up earlier the same day is not due again."""
@@ -284,7 +286,7 @@ class TestMisconfiguredDatasetsFailLoudly:
 
     def _run_with(self, datasets):
         orch = _orch()
-        with patch.object(backup_mod, "discover_datasets", return_value=datasets), \
+        with patch.object(backup_mod, "get_all_datasets", return_value=datasets), \
              patch.object(orch, "_preflight_skew_check"), \
              patch.object(orch.client, "get_last_backup_time", return_value=None), \
              patch.object(orch.client, "create_namespace", return_value=True), \
@@ -371,7 +373,7 @@ class TestBackupOrchestratorRunEndToEnd:
         failing = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="Error: connection refused"
         )
-        with patch.object(backup_mod, "discover_datasets", return_value=[ds]), \
+        with patch.object(backup_mod, "get_all_datasets", return_value=[ds]), \
              patch.object(orch, "_preflight_skew_check"), \
              patch.object(orch.client, "get_last_backup_time", return_value=None), \
              patch.object(orch.client, "create_namespace", return_value=True), \
@@ -386,7 +388,7 @@ class TestBackupOrchestratorRunEndToEnd:
         orch = _orch()
         ds = _ds()
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(backup_mod, "discover_datasets", return_value=[ds]), \
+        with patch.object(backup_mod, "get_all_datasets", return_value=[ds]), \
              patch.object(orch, "_preflight_skew_check"), \
              patch.object(orch.client, "get_last_backup_time", return_value=None), \
              patch.object(orch.client, "create_namespace", return_value=True), \
@@ -604,3 +606,89 @@ class TestSkippedByCause:
 
         assert summary.skipped == 0
         assert sum(summary.skipped_by_cause.values()) == 0
+
+
+class TestFreshnessTimes:
+    """The newest server snapshot per dataset, for the freshness metric."""
+
+    def _run(self, orch, last, backup_rc=0):
+        ds = _ds()
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=backup_rc, stdout="", stderr="e"
+        )
+        with patch.object(backup_mod, "get_all_datasets", return_value=[ds]), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(backup_mod, "get_written_bytes", return_value=1), \
+             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None), \
+             patch.object(orch.client, "get_last_backup_time", return_value=last) as fetch, \
+             patch.object(orch.client, "create_namespace", return_value=True), \
+             patch.object(orch.client, "backup", return_value=completed):
+            summary = orch.run()
+        return summary, fetch
+
+    def test_a_successful_backup_reports_the_new_snapshot_time(self):
+        before = datetime.now()
+        summary, _ = self._run(_orch(), datetime(2020, 1, 1))
+
+        assert summary.last_backup_times["tank/data"] >= before
+
+    def test_a_failed_backup_keeps_the_previous_time(self):
+        previous = datetime(2020, 1, 1)
+        summary, _ = self._run(_orch(), previous, backup_rc=1)
+
+        assert summary.last_backup_times == {"tank/data": previous}
+
+    def test_a_skipped_dataset_reports_its_existing_time(self):
+        recent = datetime.now()
+        summary, _ = self._run(_orch(), recent)
+
+        assert summary.skipped == 1
+        assert summary.last_backup_times == {"tank/data": recent}
+
+    def test_force_run_reports_times_with_one_fetch_per_dataset(self):
+        before = datetime.now()
+        summary, fetch = self._run(_orch(force=True), datetime(2020, 1, 1))
+
+        fetch.assert_called_once()
+        assert summary.last_backup_times["tank/data"] >= before
+
+    def test_force_run_with_a_failed_backup_keeps_the_previous_time(self):
+        previous = datetime(2020, 1, 1)
+        summary, _ = self._run(_orch(force=True), previous, backup_rc=1)
+
+        assert summary.last_backup_times == {"tank/data": previous}
+
+    def test_a_dataset_with_no_snapshot_and_a_failed_backup_has_no_entry(self):
+        summary, _ = self._run(_orch(force=True), None, backup_rc=1)
+
+        assert summary.last_backup_times == {}
+
+
+class TestUnknownPropertiesInRun:
+    """Unknown zpbs properties are collected from the discovery read."""
+
+    def test_unknown_properties_reach_the_summary_for_any_dataset(self):
+        orch = _orch()
+        enabled = _ds()
+        typo = Dataset(
+            name="tank/typo",
+            properties={"zpbs:backups": PropertyValue("true", "local")},
+        )
+        with patch.object(backup_mod, "get_all_datasets", return_value=[enabled, typo]), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+            summary = orch.run()
+
+        assert summary.unknown_properties == {"tank/typo": ["zpbs:backups"]}
+        assert isinstance(orch.output, io.StringIO)
+        assert "tank/typo" in orch.output.getvalue()
+        assert "zpbs:backups" in orch.output.getvalue()
+
+    def test_no_unknown_properties_means_an_empty_mapping(self):
+        orch = _orch()
+        with patch.object(backup_mod, "get_all_datasets", return_value=[_ds()]), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+            summary = orch.run()
+
+        assert summary.unknown_properties == {}

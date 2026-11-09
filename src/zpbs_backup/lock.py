@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -56,10 +55,6 @@ def run_lock(path: Path | None = None) -> Iterator[Path]:
             raise AlreadyRunning(f"another zpbs-backup run holds {lock_path}") from None
 
         try:
-            handle.seek(0)
-            handle.truncate()
-            handle.write(f"{os.getpid()}\n")
-            handle.flush()
             yield lock_path
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

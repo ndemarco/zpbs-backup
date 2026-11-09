@@ -5,10 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] - 2026-11-09
 
 ### Added
 - `zpbs:change-detection` ZFS property (`legacy`, `data` or `metadata`), passed to `proxmox-backup-client` as `--change-detection-mode` for that dataset. Scheduled runs now honour a change-detection mode; before this, the mode could be set only with `run --change-detection-mode`, which the systemd timer never passes ([#1](https://github.com/ndemarco/zpbs-backup/issues/1)). The command-line flag still works and overrides the property for that run. A malformed value set with raw `zfs set` is reported and that dataset excluded, like the other zpbs properties. `status --json` gains a `change_detection` field.
+- `zpbs_backup_dataset_last_backup_timestamp_seconds{dataset="<zfs dataset>"}`: Unix time of each dataset's newest snapshot on the backup server (after this run's backup if it succeeded, otherwise the newest existing one). A dataset with no snapshot has no series. `run --force` now reads the newest snapshot too, so the metric is present on forced runs.
+- Unknown-property detection: each run logs a syslog warning (dataset and property name) for every locally set `zpbs:*` property zpbs-backup does not recognise, and exports `zpbs_backup_unknown_properties{dataset="..."}` with the count, only for datasets that have at least one. `status` lists them per dataset and `status --json` gains `unknown_properties`.
+- Publishing to PyPI from the release workflow via trusted publishing, after `twine check` on the built wheel and sdist.
+
+### Changed
+- syslog is now controlled only by `ZPBS_SYSLOG`. Before, `ZPBS_NOTIFY=false` and `run --no-notify` also silenced syslog; they now silence only the hook script.
+- `zpbs-backup set` rejects a property name it does not know, with an error listing the valid names. Before, any `zpbs:*` name was accepted.
+- `set backup=false --clear` and `inherit all` clear every locally set `zpbs:*` property on the dataset, not only the known ones.
+- The run's metrics are rendered once; the Pushgateway and the textfile receive identical content.
+
+### Removed
+- **Breaking:** the `zpbs_backup_last_success_timestamp_seconds` metric and its state file `/var/lib/zpbs-backup/state.json`. The file is no longer read or written; delete it by hand if you want it gone.
+- The hidden `zpbs-backup notify` command group. Use `send-test-notification` or `show-config`.
+- The `/usr/local/bin/pbs-send-notification` hook path. Rename the script to `/usr/local/bin/zpbs-send-notification`.
+- The lock file no longer holds a process ID.
+- `.gitlab-ci.yml` and `MANIFEST.in`.
+
+### Breaking: stale-backup alerts
+Alerts on `zpbs_backup_last_success_timestamp_seconds` will go silent, because the series no longer exists. Replace them with a per-dataset rule:
+
+```yaml
+- alert: ZpbsBackupStale
+  expr: time() - zpbs_backup_dataset_last_backup_timestamp_seconds > 2 * 86400
+  for: 15m
+  annotations:
+    summary: "No backup of {{ $labels.dataset }} on {{ $labels.instance }} for over 2 days"
+```
+
+Datasets on a `weekly` or `monthly` schedule need a longer threshold (for example 9 days and 35 days). Pair it with an alert for runs that stop happening:
+
+```yaml
+- alert: ZpbsBackupRunMissing
+  expr: absent(zpbs_backup_last_run_timestamp_seconds)
+  for: 15m
+```
 
 ## [0.10.0] - 2026-09-23
 
