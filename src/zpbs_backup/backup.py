@@ -24,8 +24,8 @@ from .zfs import (
     discover_datasets,
     enabled_datasets,
     get_all_datasets,
-    get_latest_snapshot_creation,
-    get_written_bytes,
+    get_written_since,
+    list_snapshot_creations,
 )
 
 SKEW_MARGIN_SECONDS = 60
@@ -351,22 +351,26 @@ class BackupOrchestrator:
         Skip when:
           - clock skew with PBS is within the safety margin (set in run()),
           - a previous successful backup exists,
-          - `zfs get written` is 0 (live FS identical to most recent snapshot),
-          - the most recent snapshot was created at least SKEW_MARGIN_SECONDS
-            before the last backup (so it must have been captured by that backup).
+          - a base snapshot exists: the newest snapshot created at least
+            SKEW_MARGIN_SECONDS before the last backup (so that backup must
+            have captured it),
+          - `zfs get written@<base>` is 0 (nothing written since the base,
+            across newer snapshots and the live filesystem alike).
         """
         if not self.skip_unchanged_safe:
             return None
         if last_backup is None:
             return None
-        written = get_written_bytes(ds.name)
-        snap_creation = get_latest_snapshot_creation(ds.name)
-        if written != 0 or snap_creation is None:
+        cutoff = last_backup.timestamp() - SKEW_MARGIN_SECONDS
+        base = None
+        for name, creation in list_snapshot_creations(ds.name):
+            if creation <= cutoff:
+                base = name
+        if base is None:
             return None
-        if snap_creation + SKEW_MARGIN_SECONDS > last_backup.timestamp():
+        if get_written_since(ds.name, base) != 0:
             return None
-        snap_str = datetime.fromtimestamp(snap_creation).strftime("%Y-%m-%d %H:%M")
-        return f"unchanged (written=0, latest snap @ {snap_str})"
+        return f"unchanged since {base} (backed up {format_last_backup(last_backup)})"
 
     def _preflight_skew_check(self, client: PBSClient) -> None:
         """Measure clock skew against PBS and decide if skip-unchanged is safe.

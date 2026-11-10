@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-11-10
+
+### Fixed
+- The unchanged-dataset skip no longer requires the newest snapshot to predate the last backup. sanoid snapshots every dataset daily, so that condition almost never held and frozen datasets were fully re-read each run. The base is now the newest snapshot created at least 60 seconds before the last backup; the dataset is skipped when `zfs get written@<base>` is 0, which covers newer snapshots and live changes. The skip reason names the base snapshot. Clock-skew guard and `--force` are unchanged. Pace #2430 (zpbs-backup 0.13.1 skip fix)
+
 ## [0.13.0] - 2026-11-09
 
 ### Breaking

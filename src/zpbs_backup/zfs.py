@@ -462,44 +462,44 @@ def get_dataset(name: str) -> Dataset:
     return datasets.get(name, Dataset(name=name))
 
 
-def get_written_bytes(dataset: str) -> int | None:
-    """Return bytes written to the live filesystem since the most recent snapshot.
+def get_written_since(dataset: str, snapshot: str) -> int | None:
+    """Return bytes written to the dataset since the named snapshot.
 
-    Returns 0 if the live FS is byte-identical to the most recent snapshot.
-    Returns the dataset's referenced size if no snapshots exist.
-    Returns None if the dataset doesn't exist or the property can't be read.
+    `written@<snapshot>` covers every later snapshot and the live filesystem,
+    so 0 means the dataset is byte-identical to that snapshot.
+    Returns None if the snapshot or dataset doesn't exist or the value can't be read.
     """
     result = run_zfs_command(
-        ["get", "-Hp", "-o", "value", "written", dataset], check=False
+        ["get", "-Hp", "-o", "value", f"written@{snapshot}", dataset], check=False
     )
     if result.returncode != 0:
         return None
-    value = result.stdout.strip()
     try:
-        return int(value)
+        return int(result.stdout.strip())
     except ValueError:
         return None
 
 
-def get_latest_snapshot_creation(dataset: str) -> int | None:
-    """Return epoch seconds of the most recent snapshot's creation, or None.
+def list_snapshot_creations(dataset: str) -> list[tuple[str, int]]:
+    """Return (short snapshot name, creation epoch seconds), oldest first.
 
-    None means: dataset has no snapshots, or the query failed.
+    Empty means: dataset has no snapshots, or the query failed.
     """
     result = run_zfs_command(
-        ["list", "-Hp", "-o", "creation", "-t", "snapshot", "-s", "creation",
+        ["list", "-Hp", "-o", "name,creation", "-t", "snapshot", "-s", "creation",
          "-d", "1", dataset],
         check=False,
     )
     if result.returncode != 0:
-        return None
-    lines = [line for line in result.stdout.strip().split("\n") if line]
-    if not lines:
-        return None
-    try:
-        return int(lines[-1])
-    except ValueError:
-        return None
+        return []
+    snapshots = []
+    for line in result.stdout.strip().split("\n"):
+        name, _, creation = line.partition("\t")
+        try:
+            snapshots.append((name.partition("@")[2], int(creation)))
+        except ValueError:
+            continue
+    return snapshots
 
 
 def set_property(dataset: str, prop: str, value: str) -> None:
