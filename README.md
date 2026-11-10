@@ -573,11 +573,13 @@ ReadWritePaths=-/srv/metrics/textfile_collector
 | `zpbs_backup_datasets_skipped` | gauge | Datasets skipped, all causes |
 | `zpbs_backup_datasets_skipped_by_cause{cause="…"}` | gauge | Datasets skipped, split by cause |
 | `zpbs_backup_dataset_last_backup_timestamp_seconds{dataset="…"}` | gauge | Unix time of the dataset's newest snapshot on the backup server, after this run. Absent for a dataset with no snapshot |
+| `zpbs_backup_dataset_last_current_timestamp_seconds{dataset="…"}` | gauge | Unix time at which the backup server last held a current copy: this run's start if the dataset was backed up or found unchanged since its newest snapshot (no new snapshot is made then), otherwise its newest snapshot time. Absent for a dataset never backed up. Datasets that cannot be mounted (`container` in `status`) have no series |
 | `zpbs_backup_unknown_properties{dataset="…"}` | gauge | Number of unrecognised `zpbs:` properties set on the dataset. Emitted only for datasets with at least one |
 
 To alert on a stale backup, use the per-dataset series, for example
-`time() - zpbs_backup_dataset_last_backup_timestamp_seconds > 2 * 86400`
-(allow longer for `weekly` and `monthly` datasets), and pair it with an
+`time() - zpbs_backup_dataset_last_current_timestamp_seconds > 2 * 86400`
+(it does not go stale on an unchanged dataset, unlike
+`zpbs_backup_dataset_last_backup_timestamp_seconds`; allow longer for `weekly` and `monthly` datasets), and pair it with an
 `absent(zpbs_backup_last_run_timestamp_seconds)` alert for runs that stop
 happening.
 `zpbs_backup_datasets_skipped` counts every skip together, which cannot tell

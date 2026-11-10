@@ -115,6 +115,11 @@ class BackupSummary:
     # Newest snapshot time on the backup server per dataset name, after this
     # run. A dataset with no snapshot is absent.
     last_backup_times: dict[str, datetime] = field(default_factory=dict)
+    # When the backup server last held a copy known to be current, per
+    # dataset name: this run's start for a dataset backed up or confirmed
+    # unchanged, else its newest snapshot time. A dataset that has never been
+    # backed up is absent.
+    last_current_times: dict[str, datetime] = field(default_factory=dict)
     # Unrecognised locally set zpbs properties per dataset name; only
     # datasets that have any are present.
     unknown_properties: dict[str, list[str]] = field(default_factory=dict)
@@ -514,6 +519,10 @@ class BackupOrchestrator:
         for dataset, should_backup, skip_reason, skip_cause, last_backup in self.plan(usable):
             if last_backup is not None:
                 summary.last_backup_times[dataset.name] = last_backup
+                summary.last_current_times[dataset.name] = last_backup
+
+            if skip_cause is SkipCause.UNCHANGED:
+                summary.last_current_times[dataset.name] = summary.start_time
 
             if not should_backup:
                 self._log(f"Skipping {dataset.name}: {skip_reason}")
@@ -531,6 +540,7 @@ class BackupOrchestrator:
                 summary.results.append(result)
                 if result.backup_time is not None:
                     summary.last_backup_times[dataset.name] = result.backup_time
+                    summary.last_current_times[dataset.name] = summary.start_time
 
     def run(self, pattern: str | None = None) -> BackupSummary:
         """Run backups for all discovered datasets.
@@ -554,6 +564,9 @@ class BackupOrchestrator:
             return summary
 
         datasets = self._reject_misconfigured(datasets, summary)
+        # Organizational parents have nothing to back up: not a skip, not
+        # a metric series, not a log line.
+        datasets = [ds for ds in datasets if not ds.container]
 
         groups, unconnectable = self.connections.group(datasets)
         for dataset, problem in unconnectable:

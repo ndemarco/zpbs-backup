@@ -85,7 +85,9 @@ def _render_metrics(summary: BackupSummary) -> bytes:
 
     zpbs_backup_dataset_last_backup_timestamp_seconds has one series per
     dataset that has a snapshot on the backup server; a dataset with none has
-    no series. zpbs_backup_unknown_properties has one series per dataset that
+    no series. zpbs_backup_dataset_last_current_timestamp_seconds has the same
+    series, but advances to the run time when the dataset was found unchanged
+    and so got no new snapshot. zpbs_backup_unknown_properties has one series per dataset that
     carries at least one unrecognised zpbs property, and none otherwise.
     """
     run_end_ts = time.time()
@@ -129,6 +131,20 @@ def _render_metrics(summary: BackupSummary) -> bytes:
     for dataset, when in sorted(summary.last_backup_times.items()):
         lines.append(
             "zpbs_backup_dataset_last_backup_timestamp_seconds"
+            f'{{dataset="{_label_value(dataset)}"}} {when.timestamp()}'
+        )
+
+    lines.extend(
+        [
+            "# HELP zpbs_backup_dataset_last_current_timestamp_seconds "
+            "Unix timestamp at which the backup server last held a current copy "
+            "of a dataset",
+            "# TYPE zpbs_backup_dataset_last_current_timestamp_seconds gauge",
+        ]
+    )
+    for dataset, when in sorted(summary.last_current_times.items()):
+        lines.append(
+            "zpbs_backup_dataset_last_current_timestamp_seconds"
             f'{{dataset="{_label_value(dataset)}"}} {when.timestamp()}'
         )
 
