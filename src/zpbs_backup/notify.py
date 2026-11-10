@@ -14,10 +14,12 @@ from .backup import BackupSummary
 class NotificationConfig:
     """Configuration for notifications."""
 
+    # Whether the external hook script runs (ZPBS_NOTIFY). Does not affect
+    # syslog, which has its own switch below.
     enabled: bool = True
     # Path to external notification script (for compatibility)
     external_script: str | None = None
-    # Syslog notification (for centralized logging)
+    # Syslog logging (ZPBS_SYSLOG), independent of the hook
     syslog_enabled: bool = True
 
 
@@ -32,7 +34,6 @@ def get_notification_config() -> NotificationConfig:
     # Check for external notification script
     external_script = None
     script_paths = [
-        "/usr/local/bin/pbs-send-notification",
         "/usr/local/bin/zpbs-send-notification",
     ]
     for path in script_paths:
@@ -154,6 +155,14 @@ def _send_to_syslog(summary: BackupSummary, hostname: str) -> bool:
                     f"error=\"{_syslog_error(result.error)}\""
                 )
 
+        # Warn about zpbs properties nothing reads (typically a typo)
+        for dataset, props in sorted(summary.unknown_properties.items()):
+            for prop in props:
+                syslog.syslog(
+                    syslog.LOG_WARNING,
+                    f"unknown_property dataset={dataset} property={prop}",
+                )
+
         # Log successful datasets
         for result in summary.results:
             if result.success and not result.skipped:
@@ -173,8 +182,12 @@ def send_notification(
     summary: BackupSummary,
     hostname: str,
     config: NotificationConfig | None = None,
+    run_hook: bool = True,
 ) -> bool:
-    """Send a notification about the backup result.
+    """Log the backup result to syslog and run the notification hook.
+
+    Syslog is controlled only by ZPBS_SYSLOG. The hook script is controlled
+    by ZPBS_NOTIFY and ``run_hook`` (False for ``run --no-notify``).
 
     Metrics are NOT reported from here — see metrics.report_metrics. The two
     are independent knobs, and emitting metrics as a side effect of sending
@@ -184,6 +197,7 @@ def send_notification(
         summary: The backup summary
         hostname: The hostname
         config: Optional notification config (loaded automatically if not provided)
+        run_hook: Set False to skip the hook script for this call
 
     Returns:
         True if notification was sent successfully
@@ -191,21 +205,15 @@ def send_notification(
     if config is None:
         config = get_notification_config()
 
-    if not config.enabled:
-        return True
-
-    success = True
-
-    # Always send to syslog if enabled (for centralized logging)
     if config.syslog_enabled:
         _send_to_syslog(summary, hostname)
 
+    if not (config.enabled and run_hook and config.external_script):
+        return True
+
     subject, body = format_summary_for_notification(summary, hostname)
 
-    if config.external_script:
-        success = _send_via_external_script(config.external_script, subject, body, summary)
-
-    return success
+    return _send_via_external_script(config.external_script, subject, body, summary)
 
 
 def _send_via_external_script(

@@ -209,6 +209,13 @@ zpbs-backup run --force
 | `zpbs:priority` | 1-100 | 50 | Lower = backup first |
 | `zpbs:change-detection` | `legacy` / `data` / `metadata` | client default (`legacy`) | How `proxmox-backup-client` finds changed files |
 
+`zpbs-backup set` accepts only these names and rejects any other with an error
+listing the valid ones. A `zpbs:` property set by other means (for example a
+typo made with raw `zfs set`, such as `zpbs:backups`) does nothing, so each run
+reports it: a warning in the run output and in syslog naming the dataset and
+property, and the `zpbs_backup_unknown_properties` metric. Only properties set
+locally on a dataset count, and `zpbs-backup status` lists them per dataset.
+
 ### Inheritance
 
 Properties are inherited through the ZFS dataset hierarchy. Set `backup=true` on a parent dataset to enable backup for all children, then selectively disable with `backup=false`.
@@ -343,7 +350,12 @@ zpbs-backup set change-detection=metadata tank/data
 # Clear properties (inherit from parent)
 zpbs-backup inherit schedule tank/data
 zpbs-backup inherit -r all tank/data  # Recursive, clear all
+zpbs-backup set backup=false --clear tank/data  # Disable and clear all
 ```
+
+`inherit all` and `set backup=false --clear` remove every `zpbs:` property
+set locally on the dataset, including unknown ones. With `-r` they also
+cover its descendants.
 
 ### Test Notifications
 
@@ -468,7 +480,7 @@ zpbs-backup doesn't send mail. It tells you three ways, and you wire up whicheve
 - **exit status** — non-zero when a dataset failed, so a systemd `OnFailure=` drop-in catches it. (Exit 75 means another run held the lock. That's a deferral, and the unit already treats it as success.)
 - **your own script** at `/usr/local/bin/zpbs-send-notification` — gets the summary on stdin, plus `ZPBS_SUBJECT`, `ZPBS_SUCCESSFUL`, `ZPBS_FAILED`, `ZPBS_SKIPPED` and `ZPBS_DURATION` in the environment. Send it wherever you like.
 
-`ZPBS_NOTIFY=false` and `run --no-notify` still silence the hook. `zpbs-backup send-test-notification` still exercises it.
+syslog is controlled only by `ZPBS_SYSLOG` (default `true`). `ZPBS_NOTIFY=false` and `run --no-notify` silence the hook script only; syslog still logs the run. Properties zpbs-backup does not recognise are logged to syslog as warnings, one per dataset and property. `zpbs-backup send-test-notification` still exercises it.
 
 ### Coming from `ZPBS_NOTIFY_EMAIL`
 
@@ -489,9 +501,8 @@ One thing worth knowing: `OnFailure=` fires when a run ran and failed. Nothing h
 
 ## Metrics
 
-Run metrics (last run timestamp, last success timestamp, duration, and
-successful/failed/skipped dataset counts, with skips broken down by cause)
-can be reported two ways, either or both:
+Run metrics (last run timestamp, duration, successful/failed/skipped dataset
+counts with skips broken down by cause, and per-dataset freshness) can be reported two ways, either or both:
 
 - Environment: `ZPBS_PUSHGATEWAY=http://10.0.16.16:9091` — push to a
   Prometheus Pushgateway after each run.
@@ -519,29 +530,24 @@ directory elsewhere needs a drop-in:
 ReadWritePaths=-/srv/metrics/textfile_collector
 ```
 
-## Concurrent runs
-
-A run takes an exclusive lock on `/var/lib/zpbs-backup/run.lock`, covering
-both the timer and a manual `zpbs-backup run`. A second run exits
-immediately with status 75 and backs up nothing; the systemd unit treats
-that status as success, so an overlap is not reported as a failed backup.
-
-The lock is held by the process, not the file, so it is released even if the
-holder is killed outright, and a leftover lock file blocks nothing.
-`--dry-run` neither takes the lock nor waits on it.
-
 ### Series
 
 | Metric | Type | Meaning |
 | --- | --- | --- |
 | `zpbs_backup_last_run_timestamp_seconds` | gauge | When the most recent run ended |
-| `zpbs_backup_last_success_timestamp_seconds` | gauge | When the last fully successful run ended |
 | `zpbs_backup_duration_seconds` | gauge | How long the run took |
 | `zpbs_backup_datasets_successful` | gauge | Datasets backed up |
 | `zpbs_backup_datasets_failed` | gauge | Datasets that failed |
 | `zpbs_backup_datasets_skipped` | gauge | Datasets skipped, all causes |
 | `zpbs_backup_datasets_skipped_by_cause{cause="…"}` | gauge | Datasets skipped, split by cause |
+| `zpbs_backup_dataset_last_backup_timestamp_seconds{dataset="…"}` | gauge | Unix time of the dataset's newest snapshot on the backup server, after this run. Absent for a dataset with no snapshot |
+| `zpbs_backup_unknown_properties{dataset="…"}` | gauge | Number of unrecognised `zpbs:` properties set on the dataset. Emitted only for datasets with at least one |
 
+To alert on a stale backup, use the per-dataset series, for example
+`time() - zpbs_backup_dataset_last_backup_timestamp_seconds > 2 * 86400`
+(allow longer for `weekly` and `monthly` datasets), and pair it with an
+`absent(zpbs_backup_last_run_timestamp_seconds)` alert for runs that stop
+happening.
 `zpbs_backup_datasets_skipped` counts every skip together, which cannot tell
 a dataset that merely is not due yet from one that has silently lost its
 mountpoint. `zpbs_backup_datasets_skipped_by_cause` splits that total four
@@ -561,6 +567,17 @@ it needs.
 
 `zpbs_backup_datasets_skipped` keeps its existing unlabelled form, so queries
 and alert rules written against it are unaffected.
+
+## Concurrent runs
+
+A run takes an exclusive lock on `/var/lib/zpbs-backup/run.lock`, covering
+both the timer and a manual `zpbs-backup run`. A second run exits
+immediately with status 75 and backs up nothing; the systemd unit treats
+that status as success, so an overlap is not reported as a failed backup.
+
+The lock is held by the process, not the file, so it is released even if the
+holder is killed outright, and a leftover lock file blocks nothing.
+`--dry-run` neither takes the lock nor waits on it.
 
 ## Development
 

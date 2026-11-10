@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -14,8 +13,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .backup import BackupSummary
-
-STATE_FILE = Path("/var/lib/zpbs-backup/state.json")
 
 
 @dataclass
@@ -64,26 +61,16 @@ def report_metrics(
     if config is None:
         config = get_metrics_config()
 
-    push_to_gateway(summary, hostname, config.pushgateway_url)
-    write_textfile(summary, config.textfile_dir)
+    # Render once so both transports carry byte-identical content.
+    payload = _render_metrics(summary)
+
+    push_to_gateway(payload, hostname, config.pushgateway_url)
+    write_textfile(payload, config.textfile_dir)
 
 
-def _read_last_success() -> float | None:
-    """Read persisted last-success timestamp from state file."""
-    try:
-        data = json.loads(STATE_FILE.read_text())
-        return float(data["last_success_timestamp_seconds"])
-    except Exception:
-        return None
-
-
-def _write_last_success(ts: float) -> None:
-    """Persist last-success timestamp to state file."""
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps({"last_success_timestamp_seconds": ts}))
-    except Exception as exc:
-        print(f"zpbs-backup metrics: could not write state file: {exc}", file=sys.stderr)
+def _label_value(value: str) -> str:
+    """Escape a label value for the Prometheus text exposition format."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _render_metrics(summary: BackupSummary) -> bytes:
@@ -95,30 +82,22 @@ def _render_metrics(summary: BackupSummary) -> bytes:
     zpbs_backup_datasets_skipped stays an unlabelled total so existing
     queries and alert rules keep working; the per-cause breakdown is a
     separate series rather than a label added to that name.
+
+    zpbs_backup_dataset_last_backup_timestamp_seconds has one series per
+    dataset that has a snapshot on the backup server; a dataset with none has
+    no series. zpbs_backup_unknown_properties has one series per dataset that
+    carries at least one unrecognised zpbs property, and none otherwise.
     """
     run_end_ts = time.time()
 
     # Duration: prefer actual measured value, fall back to wall-clock estimate.
     duration = summary.duration_seconds if summary.duration_seconds is not None else 0.0
 
-    # Determine last-success timestamp.
-    if summary.failed == 0 and summary.successful > 0:
-        # This run succeeded — persist and use current time.
-        _write_last_success(run_end_ts)
-        last_success_ts = run_end_ts
-    else:
-        # This run failed/partial — read persisted value without overwriting.
-        last_success_ts = _read_last_success() or 0.0
-
     lines = [
         "# HELP zpbs_backup_last_run_timestamp_seconds "
         "Unix timestamp of most recent backup run end",
         "# TYPE zpbs_backup_last_run_timestamp_seconds gauge",
         f"zpbs_backup_last_run_timestamp_seconds {run_end_ts}",
-        "# HELP zpbs_backup_last_success_timestamp_seconds "
-        "Unix timestamp of last fully successful backup run",
-        "# TYPE zpbs_backup_last_success_timestamp_seconds gauge",
-        f"zpbs_backup_last_success_timestamp_seconds {last_success_ts}",
         "# HELP zpbs_backup_duration_seconds Duration of the backup run in seconds",
         "# TYPE zpbs_backup_duration_seconds gauge",
         f"zpbs_backup_duration_seconds {duration}",
@@ -140,19 +119,44 @@ def _render_metrics(summary: BackupSummary) -> bytes:
             f'zpbs_backup_datasets_skipped_by_cause{{cause="{cause.value}"}} {count}'
         )
 
+    lines.extend(
+        [
+            "# HELP zpbs_backup_dataset_last_backup_timestamp_seconds "
+            "Unix timestamp of the newest backup of a dataset on the backup server",
+            "# TYPE zpbs_backup_dataset_last_backup_timestamp_seconds gauge",
+        ]
+    )
+    for dataset, when in sorted(summary.last_backup_times.items()):
+        lines.append(
+            "zpbs_backup_dataset_last_backup_timestamp_seconds"
+            f'{{dataset="{_label_value(dataset)}"}} {when.timestamp()}'
+        )
+
+    lines.extend(
+        [
+            "# HELP zpbs_backup_unknown_properties "
+            "Number of unrecognised zpbs properties set on a dataset",
+            "# TYPE zpbs_backup_unknown_properties gauge",
+        ]
+    )
+    for dataset, props in sorted(summary.unknown_properties.items()):
+        lines.append(
+            f'zpbs_backup_unknown_properties{{dataset="{_label_value(dataset)}"}} {len(props)}'
+        )
+
     lines.append("")
     return "\n".join(lines).encode("utf-8")
 
 
 def push_to_gateway(
-    summary: BackupSummary,
+    payload: bytes,
     hostname: str,
     pushgateway_url: str | None,
 ) -> None:
     """Push backup metrics to a Prometheus Pushgateway.
 
     Args:
-        summary: Completed backup summary.
+        payload: Rendered metrics (see ``_render_metrics``).
         hostname: Instance label value (short hostname).
         pushgateway_url: Base URL of the Pushgateway (e.g. ``http://10.0.16.16:9091``).
             If ``None`` or empty, this function returns immediately (no-op).
@@ -160,7 +164,6 @@ def push_to_gateway(
     if not pushgateway_url:
         return
 
-    payload = _render_metrics(summary)
     url = f"{pushgateway_url.rstrip('/')}/metrics/job/zpbs_backup/instance/{hostname}"
 
     try:
@@ -177,18 +180,18 @@ def push_to_gateway(
 
 
 def write_textfile(
-    summary: BackupSummary,
+    payload: bytes,
     textfile_dir: str | None,
 ) -> None:
     """Write backup metrics to a node_exporter textfile collector file.
 
-    Writes the same six metrics as :func:`push_to_gateway` to
+    Writes the same metrics as :func:`push_to_gateway` to
     ``<textfile_dir>/zpbs_backup.prom``. The write is atomic (temp file in the
     same directory, then ``os.replace``) so node_exporter never observes a
     partial file.
 
     Args:
-        summary: Completed backup summary.
+        payload: Rendered metrics (see ``_render_metrics``).
         textfile_dir: Directory scanned by node_exporter's textfile collector
             (e.g. ``/var/lib/node_exporter/textfile_collector``). If ``None``
             or empty, this function returns immediately (no-op). A missing or
@@ -200,7 +203,6 @@ def write_textfile(
 
     dest_dir = Path(textfile_dir)
     dest = dest_dir / "zpbs_backup.prom"
-    payload = _render_metrics(summary)
 
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=".zpbs_backup.", suffix=".tmp")

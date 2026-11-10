@@ -181,6 +181,20 @@ class Dataset:
             return prop.value
         return None
 
+    @property
+    def unknown_properties(self) -> list[str]:
+        """Return locally set zpbs properties zpbs-backup does not recognise.
+
+        Only local values count: an inherited one is reported on the dataset
+        that sets it, not on every descendant. A typo such as ``zpbs:backups``
+        is silently inert, so these are surfaced rather than ignored.
+        """
+        return sorted(
+            name
+            for name, prop in self.properties.items()
+            if name not in ALL_PROPERTIES and prop.is_local
+        )
+
     def property_errors(self) -> list[InvalidPropertyError]:
         """Return every zpbs property on this dataset that cannot be acted on.
 
@@ -263,7 +277,8 @@ def run_zfs_command(args: list[str], check: bool = True) -> subprocess.Completed
 def _parse_dataset_output(stdout: str) -> dict[str, Dataset]:
     """Parse zfs get output into a dict of datasets.
 
-    Handles both zpbs: properties and the standard mountpoint property.
+    Keeps every zpbs: property (known or not, so unknown ones can be reported)
+    plus mountpoint, mounted and canmount; any other property is ignored.
     """
     datasets: dict[str, Dataset] = {}
 
@@ -288,10 +303,22 @@ def _parse_dataset_output(stdout: str) -> dict[str, Dataset]:
             datasets[name].mounted = value == "yes"
         elif prop == "canmount":
             datasets[name].canmount = value == "on"
-        else:
+        elif prop.startswith("zpbs:"):
             datasets[name].properties[prop] = PropertyValue(value=value, source=source)
 
     return datasets
+
+
+def enabled_datasets(datasets: list[Dataset]) -> list[Dataset]:
+    """Select the datasets with backup enabled, sorted by priority.
+
+    An unreadable priority must not abort selection: the orchestrators report
+    and exclude such a dataset, and `zpbs-backup status` displays the bad
+    value. Ordering it last keeps it out of the way until then.
+    """
+    enabled = [ds for ds in datasets if ds.backup_enabled]
+    enabled.sort(key=_priority_sort_key)
+    return enabled
 
 
 def discover_datasets() -> list[Dataset]:
@@ -300,22 +327,7 @@ def discover_datasets() -> list[Dataset]:
     Returns:
         List of Dataset objects with backup enabled, sorted by priority.
     """
-    # Get all zpbs properties plus mountpoint for all filesystems
-    props = ",".join(ALL_PROPERTIES) + ",mountpoint,mounted,canmount"
-    result = run_zfs_command(
-        ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
-    )
-
-    datasets = _parse_dataset_output(result.stdout)
-
-    # Filter to datasets with backup enabled and sort by priority. An
-    # unreadable priority must not abort discovery: the orchestrators report
-    # and exclude such a dataset, and `zpbs-backup status` displays the bad
-    # value. Ordering it last keeps it out of the way until then.
-    enabled = [ds for ds in datasets.values() if ds.backup_enabled]
-    enabled.sort(key=_priority_sort_key)
-
-    return enabled
+    return enabled_datasets(get_all_datasets())
 
 
 def _priority_sort_key(dataset: Dataset) -> tuple[int, str]:
@@ -327,14 +339,16 @@ def _priority_sort_key(dataset: Dataset) -> tuple[int, str]:
 
 
 def get_all_datasets() -> list[Dataset]:
-    """Get all datasets with any zpbs properties (for status display).
+    """Get all datasets with any zpbs properties, in one zfs call.
+
+    Reads every property so that zpbs: properties outside ALL_PROPERTIES are
+    seen too. Used for discovery and for status display.
 
     Returns:
         List of all Dataset objects that have any zpbs property set.
     """
-    props = ",".join(ALL_PROPERTIES) + ",mountpoint,mounted,canmount"
     result = run_zfs_command(
-        ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", props]
+        ["get", "-t", "filesystem", "-H", "-o", "name,property,value,source", "all"]
     )
 
     datasets = _parse_dataset_output(result.stdout)
@@ -441,7 +455,10 @@ def inherit_property(dataset: str, prop: str, recursive: bool = False) -> None:
 
 
 def inherit_all_properties(dataset: str, recursive: bool = False) -> None:
-    """Clear all zpbs properties on a dataset.
+    """Clear every locally set zpbs property on a dataset.
+
+    Includes properties zpbs-backup does not recognise, not only
+    ALL_PROPERTIES, so a stray ``zpbs:foo`` does not outlive ``--clear``.
 
     Args:
         dataset: The dataset name
@@ -450,7 +467,14 @@ def inherit_all_properties(dataset: str, recursive: bool = False) -> None:
     Raises:
         subprocess.CalledProcessError: If the command fails
     """
-    for prop in ALL_PROPERTIES:
+    args = ["get", "-H", "-s", "local", "-o", "property"]
+    if recursive:
+        args.append("-r")
+    args.extend(["all", dataset])
+    result = run_zfs_command(args)
+
+    local = {line for line in result.stdout.splitlines() if line.startswith("zpbs:")}
+    for prop in sorted(local):
         inherit_property(dataset, prop, recursive=recursive)
 
 
@@ -465,6 +489,10 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
         Tuple of (is_valid, error_message)
     """
     short = prop.removeprefix("zpbs:")
+
+    if prop not in ALL_PROPERTIES:
+        known = ", ".join(p.removeprefix("zpbs:") for p in ALL_PROPERTIES)
+        return False, f"Unknown property '{short}'. Valid properties: {known}"
 
     if prop == PROP_BACKUP:
         if value not in ("true", "false"):
@@ -512,8 +540,5 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
                 f"{short} can only contain alphanumeric characters, "
                 "dashes, underscores, and slashes",
             )
-
-    elif not prop.startswith("zpbs:"):
-        return False, f"Unknown property '{prop}'"
 
     return True, ""

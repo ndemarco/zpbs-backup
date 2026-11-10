@@ -26,7 +26,7 @@ PrivateNetwork=false
 ReadWritePaths=/dev/zfs
 
 # /var/lib/zpbs-backup, created with the right ownership and writable despite
-# ProtectSystem=strict. Holds the last-success state file and the run lock.
+# ProtectSystem=strict. Holds the run lock.
 StateDirectory=zpbs-backup
 StateDirectoryMode=0750
 

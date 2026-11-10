@@ -161,3 +161,34 @@ class TestRunLocking:
             )
 
         assert result.exit_code == 0
+
+
+class TestSyslogSurvivesNoNotify:
+    """`--no-notify` and ZPBS_NOTIFY=false silence the hook, never syslog."""
+
+    @pytest.mark.parametrize(
+        "args,notify_enabled,syslog_enabled,expect_hook,expect_syslog",
+        [
+            ([], True, True, True, True),
+            ([], True, False, True, False),
+            (["--no-notify"], True, True, False, True),
+            (["--no-notify"], True, False, False, False),
+            ([], False, True, False, True),
+            ([], False, False, False, False),
+        ],
+    )
+    def test_combinations(
+        self, metrics_on, tmp_path, args, notify_enabled, syslog_enabled,
+        expect_hook, expect_syslog
+    ):
+        config = NotificationConfig(
+            enabled=notify_enabled, external_script=SCRIPT_HOOK, syslog_enabled=syslog_enabled
+        )
+        with patch.object(notify_mod, "_send_to_syslog") as to_syslog:
+            result, _push, _textfile, hook = _run(
+                args, metrics_on, config, tmp_path / "run.lock"
+            )
+
+        assert result.exit_code == 0
+        assert hook.called is expect_hook
+        assert to_syslog.called is expect_syslog

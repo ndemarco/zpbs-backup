@@ -19,8 +19,10 @@ from zpbs_backup.zfs import (
     PropertyValue,
     Schedule,
     _parse_dataset_output,
+    get_all_datasets,
     get_latest_snapshot_creation,
     get_written_bytes,
+    inherit_all_properties,
     validate_property_value,
 )
 
@@ -320,10 +322,14 @@ class TestValidatePropertyValue:
         assert "change-detection" in error
         assert "metadata" in error
 
-    def test_unknown_property(self):
-        valid, error = validate_property_value("other:prop", "value")
+    @pytest.mark.parametrize("name", ["zpbs:foo", "other:prop", "zpbs:backups"])
+    def test_unknown_property_is_rejected_listing_the_valid_names(self, name):
+        valid, error = validate_property_value(name, "value")
         assert not valid
         assert "Unknown property" in error
+        for known in ("backup", "schedule", "retention", "namespace", "priority"):
+            assert known in error
+        assert "change-detection" in error
 
 
 class TestGetWrittenBytes:
@@ -481,3 +487,75 @@ class TestInvalidPropertiesFailLoudly:
             discovered = zfs_mod.discover_datasets()
 
         assert [ds.name for ds in discovered] == ["tank/good", "tank/bad"]
+
+
+class TestUnknownProperties:
+    """zpbs: properties nothing reads are surfaced, not ignored."""
+
+    def test_lists_local_unknown_properties_sorted(self):
+        ds = Dataset(
+            name="tank/data",
+            properties={
+                PROP_BACKUP: PropertyValue("true", "local"),
+                "zpbs:foo": PropertyValue("1", "local"),
+                "zpbs:bar": PropertyValue("1", "local"),
+            },
+        )
+        assert ds.unknown_properties == ["zpbs:bar", "zpbs:foo"]
+
+    def test_inherited_unknown_property_is_not_counted_on_the_child(self):
+        ds = Dataset(
+            name="tank/data/child",
+            properties={"zpbs:foo": PropertyValue("1", "inherited from tank/data")},
+        )
+        assert ds.unknown_properties == []
+
+    def test_discovery_keeps_unknown_zpbs_properties_from_one_call(self):
+        output = (
+            "tank/data\tzpbs:backup\ttrue\tlocal\n"
+            "tank/data\tzpbs:foo\tx\tlocal\n"
+            "tank/data\tcompression\tlz4\tdefault\n"
+        )
+        with patch.object(zfs_mod, "run_zfs_command", return_value=_completed(output)) as run:
+            datasets = get_all_datasets()
+
+        run.assert_called_once()
+        assert datasets[0].unknown_properties == ["zpbs:foo"]
+        assert "compression" not in datasets[0].properties
+
+
+class TestInheritAllProperties:
+    """--clear removes every local zpbs property, known or not."""
+
+    def test_clears_an_unknown_local_property_too(self):
+        listing = "zpbs:backup\nzpbs:foo\nzpbs:schedule\n"
+        with patch.object(
+            zfs_mod, "run_zfs_command", side_effect=lambda *a, **k: _completed(listing)
+        ) as run:
+            inherit_all_properties("tank/data")
+
+        calls = [c.args[0] for c in run.call_args_list]
+        assert calls[0] == ["get", "-H", "-s", "local", "-o", "property", "all", "tank/data"]
+        assert ["inherit", "zpbs:foo", "tank/data"] in calls
+        assert ["inherit", "zpbs:backup", "tank/data"] in calls
+
+    def test_ignores_non_zpbs_local_properties(self):
+        listing = "compression\nzpbs:foo\n"
+        with patch.object(
+            zfs_mod, "run_zfs_command", side_effect=lambda *a, **k: _completed(listing)
+        ) as run:
+            inherit_all_properties("tank/data")
+
+        calls = [c.args[0] for c in run.call_args_list]
+        assert ["inherit", "compression", "tank/data"] not in calls
+        assert ["inherit", "zpbs:foo", "tank/data"] in calls
+
+    def test_recursive_flag_reaches_both_the_listing_and_the_inherit(self):
+        with patch.object(
+            zfs_mod, "run_zfs_command", side_effect=lambda *a, **k: _completed("zpbs:foo\n")
+        ) as run:
+            inherit_all_properties("tank/data", recursive=True)
+
+        calls = [c.args[0] for c in run.call_args_list]
+        assert calls[0] == ["get", "-H", "-s", "local", "-o", "property", "-r", "all", "tank/data"]
+        assert ["inherit", "-r", "zpbs:foo", "tank/data"] in calls
