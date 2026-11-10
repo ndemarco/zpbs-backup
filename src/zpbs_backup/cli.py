@@ -120,9 +120,10 @@ def status(orphans: bool, json_output: bool, show_connections: bool) -> None:
         for ds in datasets:
             errors = ds.property_errors()
             readable = not errors
+            container = ds.backup_enabled and ds.container
             last_backup, problem = (
                 _last_backup(connections, ds, hostname)
-                if ds.backup_enabled and readable
+                if ds.backup_enabled and readable and not container
                 else (None, None)
             )
             namespace = (
@@ -132,6 +133,7 @@ def status(orphans: bool, json_output: bool, show_connections: bool) -> None:
             output_data.append({
                 "dataset": ds.name,
                 "backup_enabled": ds.backup_enabled,
+                "container": container,
                 "schedule": ds.schedule.value if readable else None,
                 "priority": ds.priority if readable else None,
                 "change_detection": ds.change_detection_mode if readable else None,
@@ -140,7 +142,7 @@ def status(orphans: bool, json_output: bool, show_connections: bool) -> None:
                 "last_backup": last_backup.isoformat() if last_backup else None,
                 "backup_due": (
                     is_backup_due(ds.schedule, last_backup)
-                    if ds.backup_enabled and readable and problem is None
+                    if ds.backup_enabled and readable and not container and problem is None
                     else None
                 ),
                 "connection_problem": problem,
@@ -180,6 +182,11 @@ def status(orphans: bool, json_output: bool, show_connections: bool) -> None:
             priority = "invalid"
             last_str = "-"
             status_str = "misconfigured"
+        elif ds.backup_enabled and ds.container:
+            schedule = "-"
+            priority = "-"
+            last_str = "-"
+            status_str = "container"
         elif ds.backup_enabled:
             schedule = ds.schedule.value
             priority = str(ds.priority)
@@ -436,7 +443,7 @@ def audit() -> None:
     connections = _load_connections()
     hostname = get_hostname()
 
-    datasets = discover_datasets()
+    datasets = [ds for ds in discover_datasets() if not ds.container]
     groups, problems = connections.group(datasets)
 
     click.echo(f"Auditing {len(datasets)} dataset(s)...")

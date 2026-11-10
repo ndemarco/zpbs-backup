@@ -22,6 +22,7 @@ from zpbs_backup.metrics import (
 METRIC_NAMES = (
     "zpbs_backup_last_run_timestamp_seconds",
     "zpbs_backup_dataset_last_backup_timestamp_seconds",
+    "zpbs_backup_dataset_last_current_timestamp_seconds",
     "zpbs_backup_unknown_properties",
     "zpbs_backup_duration_seconds",
     "zpbs_backup_datasets_successful",
@@ -38,6 +39,7 @@ def _summary(
     duration=0.0,
     skipped_by_cause=None,
     last_backup_times=None,
+    last_current_times=None,
     unknown_properties=None,
 ):
     """Build a minimal stand-in for BackupSummary (metrics only reads these fields)."""
@@ -51,6 +53,7 @@ def _summary(
         duration_seconds=duration,
         skipped_by_cause=counts,
         last_backup_times=last_backup_times or {},
+        last_current_times=last_current_times or {},
         unknown_properties=unknown_properties or {},
     )
 
@@ -247,6 +250,24 @@ class TestPerDatasetSeries:
 
         assert "# HELP zpbs_backup_dataset_last_backup_timestamp_seconds" in body
         assert "zpbs_backup_dataset_last_backup_timestamp_seconds{" not in body
+
+    def test_current_timestamp_has_one_series_per_dataset(self):
+        when = datetime(2026, 11, 8, 3, 0, tzinfo=UTC)
+        body = _render_metrics(
+            _summary(last_current_times={'tank/a"b': when})
+        ).decode()
+
+        assert "# TYPE zpbs_backup_dataset_last_current_timestamp_seconds gauge" in body
+        assert (
+            'zpbs_backup_dataset_last_current_timestamp_seconds{dataset="tank/a\\"b"} '
+            f"{when.timestamp()}"
+        ) in body
+
+    def test_never_backed_up_dataset_has_no_current_series(self):
+        body = _render_metrics(_summary(successful=1)).decode()
+
+        assert "# HELP zpbs_backup_dataset_last_current_timestamp_seconds" in body
+        assert "zpbs_backup_dataset_last_current_timestamp_seconds{" not in body
 
     def test_unknown_properties_count_only_datasets_that_have_some(self):
         body = _render_metrics(

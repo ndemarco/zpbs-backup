@@ -106,3 +106,36 @@ class TestSetRejectsUnknownProperties:
 
         assert result.exit_code == 0
         setter.assert_called_once_with("tank/data", "zpbs:schedule", "weekly")
+
+
+class TestStatusShowsContainers:
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"canmount": False, "mounted": False},
+            {"mountpoint": None},
+        ],
+        ids=["canmount-off", "mountpoint-none-or-legacy"],
+    )
+    def test_unmountable_dataset_is_a_container(self, bad_dataset, changes):
+        bad_dataset.properties[PROP_SCHEDULE] = PropertyValue(value="daily", source="local")
+        for key, value in changes.items():
+            setattr(bad_dataset, key, value)
+
+        result = _invoke(["status"], bad_dataset)
+
+        assert result.exit_code == 0
+        row = next(line for line in result.output.splitlines() if "tank/data" in line)
+        assert row.split()[-1] == "container"
+        assert "due" not in row
+        assert "never" not in row
+
+    def test_json_marks_the_container_and_withholds_due(self, bad_dataset):
+        bad_dataset.properties[PROP_SCHEDULE] = PropertyValue(value="daily", source="local")
+        bad_dataset.mountpoint = None
+
+        entry = json.loads(_invoke(["status", "--json"], bad_dataset).output)[0]
+
+        assert entry["container"] is True
+        assert entry["backup_due"] is None
+        assert entry["last_backup"] is None

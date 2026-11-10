@@ -716,3 +716,106 @@ class TestUnknownPropertiesInRun:
             summary = orch.run()
 
         assert summary.unknown_properties == {}
+
+
+def _container(name: str = "tank", **kwargs) -> Dataset:
+    ds = _ds(name)
+    for key, value in kwargs.items():
+        setattr(ds, key, value)
+    return ds
+
+
+class TestContainers:
+    """Organizational parents are neither skipped nor reported per dataset."""
+
+    def _run(self, orch, datasets, last=None):
+        with patch.object(backup_mod, "get_all_datasets", return_value=datasets), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(_client(orch), "get_last_backup_time", return_value=last):
+            return orch.run()
+
+    def test_container_definition(self):
+        assert _container(canmount=False, mounted=False).container
+        assert _container(mountpoint=None).container
+        assert not _container().container
+        assert not _container(canmount=False, mounted=True).container
+
+    def test_run_leaves_containers_out_of_counts_logs_and_metrics(self):
+        orch = _orch()
+        recent = datetime.now()
+        summary = self._run(
+            orch,
+            [
+                _container("files-fast", canmount=False, mounted=False),
+                _container("files-bulk", mountpoint=None),
+                _ds("files-fast/data"),
+            ],
+            last=recent,
+        )
+
+        assert summary.skipped == 1
+        assert len(summary.results) == 1
+        assert set(summary.last_backup_times) == {"files-fast/data"}
+        assert set(summary.last_current_times) == {"files-fast/data"}
+        printed = _printed(orch)
+        assert "Backing up files-fast ->" not in printed
+        assert "not mounted" not in printed
+
+    def test_unknown_properties_still_cover_containers(self):
+        orch = _orch()
+        parent = _container("files-fast", canmount=False, mounted=False)
+        parent.properties["zpbs:backups"] = PropertyValue("true", "local")
+        summary = self._run(orch, [parent], last=None)
+
+        assert summary.unknown_properties == {"files-fast": ["zpbs:backups"]}
+        assert summary.results == []
+
+
+class TestLastCurrentTimes:
+    """When the backup server last held a current copy of each dataset."""
+
+    def _run(self, orch, last, written=1, snap=None, backup_rc=0):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=backup_rc, stdout="", stderr="e"
+        )
+        with patch.object(backup_mod, "get_all_datasets", return_value=[_ds()]), \
+             patch.object(orch, "_preflight_skew_check"), \
+             patch.object(backup_mod, "get_written_bytes", return_value=written), \
+             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap), \
+             patch.object(_client(orch), "get_last_backup_time", return_value=last), \
+             patch.object(_client(orch), "create_namespace", return_value=True), \
+             patch.object(_client(orch), "backup", return_value=completed):
+            return orch.run()
+
+    def test_unchanged_skip_is_current_as_of_the_run(self):
+        stale = datetime.now() - timedelta(days=2)
+        snap = int(stale.timestamp()) - SKEW_MARGIN_SECONDS - 1
+        summary = self._run(_orch(), stale, written=0, snap=snap)
+
+        assert summary.skipped_by_cause[SkipCause.UNCHANGED] == 1
+        assert summary.last_current_times == {"tank/data": summary.start_time}
+        assert summary.last_backup_times == {"tank/data": stale}
+
+    def test_backed_up_is_current_as_of_the_run(self):
+        summary = self._run(_orch(), datetime(2020, 1, 1))
+
+        assert summary.successful == 1
+        assert summary.last_current_times == {"tank/data": summary.start_time}
+
+    def test_not_due_keeps_the_last_backup_time(self):
+        recent = datetime.now()
+        summary = self._run(_orch(), recent)
+
+        assert summary.skipped_by_cause[SkipCause.NOT_DUE] == 1
+        assert summary.last_current_times == {"tank/data": recent}
+
+    def test_failed_backup_keeps_the_last_backup_time(self):
+        previous = datetime(2020, 1, 1)
+        summary = self._run(_orch(), previous, backup_rc=1)
+
+        assert summary.last_current_times == {"tank/data": previous}
+
+    def test_never_backed_up_has_no_entry(self):
+        summary = self._run(_orch(), None, backup_rc=1)
+
+        assert summary.last_current_times == {}

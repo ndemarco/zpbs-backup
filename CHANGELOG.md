@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-11-09
+
+### Breaking
+- `zpbs-backup run` no longer counts datasets that cannot be mounted (`canmount=off`, or `mountpoint` of `none` or `legacy`) as skipped, no longer logs "Backing up" for them, and gives them no per-dataset metric series. `zpbs_backup_datasets_skipped` and the `not_mounted` and `no_mountpoint` causes drop accordingly.
+
+### Added
+- `status` shows such datasets, which inherit `zpbs:backup=true` from a pool root, as `container` instead of `due` with last backup `never`. `status --json` gains a `container` field. `audit` no longer lists them as never backed up. Unknown-property detection still covers them.
+- `zpbs_backup_dataset_last_current_timestamp_seconds{dataset="…"}`: the run time when the dataset was backed up or found unchanged since its newest snapshot; otherwise its newest snapshot time. Absent for a dataset never backed up. An unchanged dataset gets no new snapshot, so `zpbs_backup_dataset_last_backup_timestamp_seconds` ages although the copy is current; alert on the new series instead:
+
+```yaml
+- alert: ZpbsBackupStale
+  expr: time() - zpbs_backup_dataset_last_current_timestamp_seconds > 2 * 86400
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "{{ $labels.dataset }} has no current backup for over 2 days"
+```
+
+Pair it with `absent(zpbs_backup_dataset_last_current_timestamp_seconds)` or `absent(zpbs_backup_last_run_timestamp_seconds)`, since a dataset that never backed up has no series to age. Allow longer for `weekly` and `monthly` datasets.
+
 ## [0.12.0] - 2026-11-09
 
 ### Breaking

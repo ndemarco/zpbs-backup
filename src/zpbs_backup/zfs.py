@@ -111,6 +111,17 @@ class Dataset:
     canmount: bool = True
 
     @property
+    def container(self) -> bool:
+        """Return True if the dataset can never hold files of its own.
+
+        An organizational parent (canmount=off, or mountpoint none/legacy)
+        inherits zpbs:backup=true from the pool but has nothing to back up;
+        its children carry the data. A canmount=noauto dataset that is
+        currently mounted is not a container.
+        """
+        return self.mountpoint is None or (not self.canmount and not self.mounted)
+
+    @property
     def backup_enabled(self) -> bool:
         """Return True if backup is enabled for this dataset."""
         prop = self.properties.get(PROP_BACKUP)
