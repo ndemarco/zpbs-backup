@@ -22,12 +22,15 @@ from zpbs_backup.backup import (
     failure_message,
     get_retention_policy,
 )
-from zpbs_backup.config import PBSConfig
+from zpbs_backup.config import Credentials
+from zpbs_backup.connections import Connections, Target
+from zpbs_backup.pbs import PBSClient
 from zpbs_backup.retention import DEFAULT_RETENTION
 from zpbs_backup.zfs import (
     PROP_BACKUP,
     PROP_CHANGE_DETECTION,
     PROP_PRIORITY,
+    PROP_REPOSITORY,
     PROP_RETENTION,
     PROP_SCHEDULE,
     Dataset,
@@ -35,19 +38,45 @@ from zpbs_backup.zfs import (
     PropertyValue,
 )
 
+REPO = "u@p!t@srv:store"
+TARGET = Target(REPO)
 
-def _ds(name: str = "tank/data") -> Dataset:
+
+@pytest.fixture(autouse=True)
+def _no_server():
+    """Nothing here may reach a real proxmox-backup-client."""
+    with patch.object(PBSClient, "check_connection"), \
+         patch.object(PBSClient, "list_snapshot_details", return_value=[]), \
+         patch.object(PBSClient, "set_snapshot_notes", return_value=True):
+        yield
+
+
+def _ds(name: str = "tank/data", repository: str | None = REPO) -> Dataset:
+    properties = {PROP_BACKUP: PropertyValue(value="true", source="local")}
+    if repository is not None:
+        properties[PROP_REPOSITORY] = PropertyValue(value=repository, source="local")
     return Dataset(
         name=name,
-        properties={PROP_BACKUP: PropertyValue(value="true", source="local")},
+        properties=properties,
         mountpoint=f"/{name}",
         mounted=True,
     )
 
 
+def _connections(output: io.StringIO | None = None) -> Connections:
+    return Connections(Credentials({REPO: "secret"}), output=output)
+
+
+def _client(orchestrator: BackupOrchestrator | PruneOrchestrator) -> PBSClient:
+    """The one client the orchestrator uses for REPO."""
+    return orchestrator.connections.client(TARGET)
+
+
 def _orch(force: bool = False) -> BackupOrchestrator:
-    config = PBSConfig(repository="u@p!t@srv:store", server="srv")
-    return BackupOrchestrator(config=config, force=force, output=io.StringIO())
+    sink = io.StringIO()
+    return BackupOrchestrator(
+        connections=_connections(sink), force=force, output=sink
+    )
 
 
 def _printed(orch: BackupOrchestrator) -> str:
@@ -127,7 +156,7 @@ class TestPlanScheduleCheck:
         ds = _ds()
         last = datetime(2026, 11, 8, 3, 0)
         with patch.object(backup_mod, "is_backup_due") as is_due, \
-             patch.object(orch.client, "get_last_backup_time", return_value=last) as last_backup:
+             patch.object(_client(orch), "get_last_backup_time", return_value=last) as last_backup:
             plan = orch.plan([ds])
         is_due.assert_not_called()
         # The newest snapshot is still read once, for the freshness metric.
@@ -139,7 +168,7 @@ class TestPlanScheduleCheck:
         orch = _orch()
         ds = _ds()
         stamped_late = (datetime.now() - timedelta(days=1)).replace(hour=3, minute=20)
-        with patch.object(orch.client, "get_last_backup_time", return_value=stamped_late), \
+        with patch.object(_client(orch), "get_last_backup_time", return_value=stamped_late), \
              patch.object(backup_mod, "get_written_bytes", return_value=12345), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
             plan = orch.plan([ds])
@@ -149,7 +178,7 @@ class TestPlanScheduleCheck:
         """A dataset backed up earlier the same day is not due again."""
         orch = _orch()
         ds = _ds()
-        with patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+        with patch.object(_client(orch), "get_last_backup_time", return_value=datetime.now()):
             plan = orch.plan([ds])
         assert len(plan) == 1
         planned = plan[0]
@@ -164,41 +193,41 @@ class TestPreflightSkewCheck:
 
     def test_skipped_when_force(self):
         orch = _orch(force=True)
-        with patch.object(orch.client, "get_clock_skew_seconds") as probe:
-            orch._preflight_skew_check()
+        with patch.object(_client(orch), "get_clock_skew_seconds") as probe:
+            orch._preflight_skew_check(_client(orch))
         probe.assert_not_called()
         assert orch.skip_unchanged_safe is True
 
     def test_silent_under_5s(self):
         orch = _orch()
-        with patch.object(orch.client, "get_clock_skew_seconds", return_value=2.0):
-            orch._preflight_skew_check()
+        with patch.object(_client(orch), "get_clock_skew_seconds", return_value=2.0):
+            orch._preflight_skew_check(_client(orch))
         assert orch.skip_unchanged_safe is True
 
     def test_warns_but_allows_within_margin(self):
         orch = _orch()
-        with patch.object(orch.client, "get_clock_skew_seconds", return_value=30.0):
-            orch._preflight_skew_check()
+        with patch.object(_client(orch), "get_clock_skew_seconds", return_value=30.0):
+            orch._preflight_skew_check(_client(orch))
         assert orch.skip_unchanged_safe is True
         assert "within" in _printed(orch)
 
     def test_disables_when_skew_exceeds_margin(self):
         orch = _orch()
-        with patch.object(orch.client, "get_clock_skew_seconds", return_value=120.0):
-            orch._preflight_skew_check()
+        with patch.object(_client(orch), "get_clock_skew_seconds", return_value=120.0):
+            orch._preflight_skew_check(_client(orch))
         assert orch.skip_unchanged_safe is False
         assert "exceeds" in _printed(orch)
 
     def test_disables_when_skew_negative_exceeds_margin(self):
         orch = _orch()
-        with patch.object(orch.client, "get_clock_skew_seconds", return_value=-90.0):
-            orch._preflight_skew_check()
+        with patch.object(_client(orch), "get_clock_skew_seconds", return_value=-90.0):
+            orch._preflight_skew_check(_client(orch))
         assert orch.skip_unchanged_safe is False
 
     def test_disables_when_probe_fails(self):
         orch = _orch()
-        with patch.object(orch.client, "get_clock_skew_seconds", return_value=None):
-            orch._preflight_skew_check()
+        with patch.object(_client(orch), "get_clock_skew_seconds", return_value=None):
+            orch._preflight_skew_check(_client(orch))
         assert orch.skip_unchanged_safe is False
         assert "could not measure" in _printed(orch)
 
@@ -241,8 +270,8 @@ class TestBackupDatasetFailureReporting:
         completed = subprocess.CompletedProcess(
             args=[], returncode=returncode, stdout=stdout, stderr=stderr
         )
-        with patch.object(orch.client, "backup", return_value=completed), \
-             patch.object(orch.client, "create_namespace", return_value=True):
+        with patch.object(_client(orch), "backup", return_value=completed), \
+             patch.object(_client(orch), "create_namespace", return_value=True):
             yield orch
 
     def test_error_is_the_client_text_not_none(self):
@@ -274,6 +303,7 @@ def _ds_with(prop: str, value: str, name: str = "tank/data") -> Dataset:
         name=name,
         properties={
             PROP_BACKUP: PropertyValue(value="true", source="local"),
+            PROP_REPOSITORY: PropertyValue(value=REPO, source="local"),
             prop: PropertyValue(value=value, source="local"),
         },
         mountpoint=f"/{name}",
@@ -288,9 +318,9 @@ class TestMisconfiguredDatasetsFailLoudly:
         orch = _orch()
         with patch.object(backup_mod, "get_all_datasets", return_value=datasets), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(orch.client, "get_last_backup_time", return_value=None), \
-             patch.object(orch.client, "create_namespace", return_value=True), \
-             patch.object(orch.client, "backup") as client_backup:
+             patch.object(_client(orch), "get_last_backup_time", return_value=None), \
+             patch.object(_client(orch), "create_namespace", return_value=True), \
+             patch.object(_client(orch), "backup") as client_backup:
             client_backup.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""
             )
@@ -343,8 +373,8 @@ class TestChangeDetectionMode:
         orch = _orch()
         orch.change_detection_mode = cli_mode
         completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(orch.client, "backup", return_value=completed) as client_backup, \
-             patch.object(orch.client, "create_namespace", return_value=True):
+        with patch.object(_client(orch), "backup", return_value=completed) as client_backup, \
+             patch.object(_client(orch), "create_namespace", return_value=True):
             orch.backup_dataset(dataset)
         return client_backup.call_args.kwargs["change_detection_mode"]
 
@@ -375,9 +405,9 @@ class TestBackupOrchestratorRunEndToEnd:
         )
         with patch.object(backup_mod, "get_all_datasets", return_value=[ds]), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(orch.client, "get_last_backup_time", return_value=None), \
-             patch.object(orch.client, "create_namespace", return_value=True), \
-             patch.object(orch.client, "backup", return_value=failing):
+             patch.object(_client(orch), "get_last_backup_time", return_value=None), \
+             patch.object(_client(orch), "create_namespace", return_value=True), \
+             patch.object(_client(orch), "backup", return_value=failing):
             summary = orch.run()
 
         assert summary.failed == 1
@@ -390,9 +420,9 @@ class TestBackupOrchestratorRunEndToEnd:
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(backup_mod, "get_all_datasets", return_value=[ds]), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(orch.client, "get_last_backup_time", return_value=None), \
-             patch.object(orch.client, "create_namespace", return_value=True), \
-             patch.object(orch.client, "backup", return_value=ok):
+             patch.object(_client(orch), "get_last_backup_time", return_value=None), \
+             patch.object(_client(orch), "create_namespace", return_value=True), \
+             patch.object(_client(orch), "backup", return_value=ok):
             summary = orch.run()
 
         assert summary.successful == 1
@@ -404,10 +434,7 @@ class TestPruneOrchestratorRun:
 
     def _pruner(self) -> tuple[PruneOrchestrator, io.StringIO]:
         printed = io.StringIO()
-        pruner = PruneOrchestrator(
-            config=PBSConfig(repository="u@p!t@srv:store", server="srv"),
-            output=printed,
-        )
+        pruner = PruneOrchestrator(connections=_connections(printed), output=printed)
         return pruner, printed
 
     def test_no_datasets_found(self):
@@ -429,7 +456,7 @@ class TestPruneOrchestratorRun:
             return failing if kwargs["backup_id"].endswith("bad") else ok
 
         with patch.object(backup_mod, "discover_datasets", return_value=[bad, good]), \
-             patch.object(pruner.client, "prune", side_effect=_prune_side_effect) as prune_call:
+             patch.object(_client(pruner), "prune", side_effect=_prune_side_effect) as prune_call:
             counts = pruner.run()
 
         assert counts == (1, 1)
@@ -442,7 +469,7 @@ class TestPruneOrchestratorRun:
         bad = _ds_with(PROP_RETENTION, "7 days")
 
         with patch.object(backup_mod, "discover_datasets", return_value=[bad]), \
-             patch.object(pruner.client, "prune") as prune_call:
+             patch.object(_client(pruner), "prune") as prune_call:
             counts = pruner.run()
 
         assert counts == (0, 1)
@@ -455,7 +482,7 @@ class TestPruneOrchestratorRun:
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
         with patch.object(backup_mod, "discover_datasets", return_value=[matching, other]), \
-             patch.object(pruner.client, "prune", return_value=ok) as prune_call:
+             patch.object(_client(pruner), "prune", return_value=ok) as prune_call:
             counts = pruner.run(pattern="tank/*")
 
         assert counts == (1, 0)
@@ -480,12 +507,9 @@ class TestRetentionPolicyResolution:
     def test_prune_refuses_a_dataset_with_invalid_retention(self):
         """Pruning against a default policy would delete to a policy nobody set."""
         printed = io.StringIO()
-        pruner = PruneOrchestrator(
-            config=PBSConfig(repository="u@p!t@srv:store", server="srv"),
-            output=printed,
-        )
+        pruner = PruneOrchestrator(connections=_connections(printed), output=printed)
 
-        with patch.object(pruner.client, "prune") as prune_call:
+        with patch.object(_client(pruner), "prune") as prune_call:
             assert pruner.prune_dataset(_ds_with(PROP_RETENTION, "7 days")) is False
 
         prune_call.assert_not_called()
@@ -498,7 +522,7 @@ class TestSkipCauseAttribution:
     def test_not_due_is_attributed(self):
         orch = _orch()
         ds = _ds()
-        with patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+        with patch.object(_client(orch), "get_last_backup_time", return_value=datetime.now()):
             plan = orch.plan([ds])
 
         assert plan[0].skip_cause is SkipCause.NOT_DUE
@@ -509,7 +533,7 @@ class TestSkipCauseAttribution:
         stale = datetime.now() - timedelta(days=2)
         snap_creation = int(stale.timestamp()) - SKEW_MARGIN_SECONDS - 1
 
-        with patch.object(orch.client, "get_last_backup_time", return_value=stale), \
+        with patch.object(_client(orch), "get_last_backup_time", return_value=stale), \
              patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(
                  backup_mod, "get_latest_snapshot_creation", return_value=snap_creation
@@ -620,9 +644,9 @@ class TestFreshnessTimes:
              patch.object(orch, "_preflight_skew_check"), \
              patch.object(backup_mod, "get_written_bytes", return_value=1), \
              patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None), \
-             patch.object(orch.client, "get_last_backup_time", return_value=last) as fetch, \
-             patch.object(orch.client, "create_namespace", return_value=True), \
-             patch.object(orch.client, "backup", return_value=completed):
+             patch.object(_client(orch), "get_last_backup_time", return_value=last) as fetch, \
+             patch.object(_client(orch), "create_namespace", return_value=True), \
+             patch.object(_client(orch), "backup", return_value=completed):
             summary = orch.run()
         return summary, fetch
 
@@ -676,7 +700,7 @@ class TestUnknownPropertiesInRun:
         )
         with patch.object(backup_mod, "get_all_datasets", return_value=[enabled, typo]), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+             patch.object(_client(orch), "get_last_backup_time", return_value=datetime.now()):
             summary = orch.run()
 
         assert summary.unknown_properties == {"tank/typo": ["zpbs:backups"]}
@@ -688,7 +712,7 @@ class TestUnknownPropertiesInRun:
         orch = _orch()
         with patch.object(backup_mod, "get_all_datasets", return_value=[_ds()]), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(orch.client, "get_last_backup_time", return_value=datetime.now()):
+             patch.object(_client(orch), "get_last_backup_time", return_value=datetime.now()):
             summary = orch.run()
 
         assert summary.unknown_properties == {}

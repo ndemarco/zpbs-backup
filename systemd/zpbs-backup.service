@@ -7,8 +7,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/zpbs-backup run
-# Load PBS credentials from file if not in environment
-EnvironmentFile=-/etc/zpbs-backup/pbs.conf
+# Connection settings are ZFS properties (zpbs:repository and friends); token
+# secrets are in /etc/zpbs-backup/credentials. Reporting settings
+# (ZPBS_PUSHGATEWAY, ZPBS_TEXTFILE_DIR, ZPBS_SYSLOG, ZPBS_NOTIFY) are set with
+# Environment= in a drop-in: systemctl edit zpbs-backup.service
 
 # Overlapping runs are prevented by an exclusive flock the command itself
 # takes, which also covers a manual `zpbs-backup run`. 75 is what it exits

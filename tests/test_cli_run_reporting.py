@@ -13,7 +13,7 @@ from zpbs_backup import metrics as metrics_mod
 from zpbs_backup import notify as notify_mod
 from zpbs_backup.backup import BackupResult, BackupSummary
 from zpbs_backup.cli import main
-from zpbs_backup.config import PBSConfig
+from zpbs_backup.config import Credentials
 from zpbs_backup.lock import EXIT_ALREADY_RUNNING, run_lock
 from zpbs_backup.metrics import MetricsConfig
 from zpbs_backup.notify import NotificationConfig
@@ -25,11 +25,9 @@ SCRIPT_HOOK = "/usr/local/bin/zpbs-send-notification"
 def _run(args, metrics_config, notify_config, lock_path, summary=None):
     """Invoke `run`, stubbing everything but the reporting decision."""
     runner = CliRunner()
-    pbs_config = PBSConfig(repository="u@p!t@srv:store", server="srv")
 
     with patch.object(lock_mod, "LOCK_PATH", lock_path), \
-         patch.object(cli_mod, "load_config", return_value=pbs_config), \
-         patch.object(cli_mod, "_check_pbs_connection"), \
+         patch.object(cli_mod, "load_credentials", return_value=Credentials({})), \
          patch.object(cli_mod, "get_hostname", return_value="storage-server"), \
          patch.object(
              cli_mod.BackupOrchestrator, "run", return_value=summary or BackupSummary()

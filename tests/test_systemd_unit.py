@@ -63,6 +63,29 @@ class TestUnitCanWriteItsOutputs:
         assert "/dev/zfs" in service["ReadWritePaths"]
 
 
+class TestUnitsDoNotLoadPbsConf:
+    """0.12.0 removed pbs.conf: connection settings are properties plus credentials."""
+
+    @pytest.mark.parametrize("unit", [UNIT_PATH, UNIT_PATH.parent / "zpbs-backup-prune.service"])
+    def test_no_environment_file(self, unit):
+        text = unit.read_text()
+        assert "EnvironmentFile" not in text
+        assert "pbs.conf" not in text
+
+    def test_reporting_settings_are_documented_as_environment_lines(self):
+        text = UNIT_PATH.read_text()
+        for name in ("ZPBS_PUSHGATEWAY", "ZPBS_TEXTFILE_DIR", "ZPBS_SYSLOG", "ZPBS_NOTIFY"):
+            assert name in text
+        assert "Environment=" in text
+
+    def test_postinstall_points_at_properties_and_credentials_not_pbs_conf(self):
+        text = (UNIT_PATH.parent.parent / "packaging" / "scripts" / "postinstall.sh").read_text()
+        assert "pbs.conf" not in text
+        assert "/etc/zpbs-backup/credentials" in text
+        assert "zpbs-backup set repository=" in text
+        assert "migrate-config" in text
+
+
 class TestUnitConcurrencyGuard:
     """The pgrep race is gone; the application lock replaces it."""
 

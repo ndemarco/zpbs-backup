@@ -9,16 +9,15 @@ from click.testing import CliRunner
 from zpbs_backup import cli as cli_mod
 from zpbs_backup import lock as lock_mod
 from zpbs_backup.cli import main
-from zpbs_backup.config import PBSConfig
+from zpbs_backup.config import Credentials
 from zpbs_backup.lock import EXIT_ALREADY_RUNNING, run_lock
 
 
 def _prune(args, lock_path):
     runner = CliRunner()
-    pbs_config = PBSConfig(repository="u@p!t@srv:store", server="srv")
 
     with patch.object(lock_mod, "LOCK_PATH", lock_path), \
-         patch.object(cli_mod, "load_config", return_value=pbs_config), \
+         patch.object(cli_mod, "load_credentials", return_value=Credentials({})), \
          patch.object(cli_mod.PruneOrchestrator, "run", return_value=(1, 0)) as pruned:
         result = runner.invoke(main, ["prune", *args])
 

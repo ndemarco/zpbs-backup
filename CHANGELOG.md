@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-11-09
+
+### Breaking
+- The PBS connection is no longer read from `pbs.conf`, `~/.config/zpbs-backup/pbs.conf` or `PBS_*` environment variables. Repository, fingerprint, key file and ID separator are inherited ZFS properties; the token secret is in `/etc/zpbs-backup/credentials`. Run `zpbs-backup migrate-config` before upgrading (see Migration).
+- The packaged systemd units no longer load `pbs.conf` as an `EnvironmentFile`. `ZPBS_PUSHGATEWAY`, `ZPBS_TEXTFILE_DIR`, `ZPBS_SYSLOG` and `ZPBS_NOTIFY` are set with `Environment=` in a systemd drop-in.
+- A backup-enabled dataset with no `zpbs:repository`, or whose repository has no credentials entry, is a failed dataset (results, exit code, metrics). No server is contacted for it.
+
+### Added
+- `zpbs:repository` (`user@realm!tokenname@server:datastore`), `zpbs:fingerprint`, `zpbs:keyfile` and `zpbs:id-separator` ZFS properties, inherited, normally set on a pool root. All four are accepted and validated by `zpbs-backup set`.
+- Credentials file `/etc/zpbs-backup/credentials` (INI; section name is the exact repository string, key `secret`). It is refused unless owned by root and not group- or world-accessible. A secret is used only for the exact repository it is listed under, so a user with delegated `zfs allow` property rights cannot redirect the host's token to their own server.
+- Pools and datasets may target different repositories. `run` and `prune` group datasets by repository and use one client per repository; an unreachable repository fails only its own datasets.
+- `zpbs-backup status --connections` (with `--json`): per backup-enabled dataset, the effective repository, fingerprint, key file and separator with the dataset each is inherited from, and whether a credentials entry exists. It never prints a secret and contacts no server.
+- `zpbs-backup check`: one login per repository used by a backup-enabled dataset. A repository with no credentials entry is reported as failed and not contacted. Non-zero exit if anything fails.
+- `zpbs-backup migrate-config`: reads `pbs.conf`, writes the credentials file (never overwriting an existing one), prints `zfs set` commands for the pool roots (runs them only with `--apply`), prints `ZPBS_*` reporting settings as `Environment=` lines, and leaves `pbs.conf` in place.
+- Separator-change guard: each backup records its `zpbs:id-separator` in the snapshot's PBS notes. If the newest snapshot's recorded separator differs from the dataset's effective one, that dataset fails with an error naming both values until the property is reverted. Snapshots without a record (made before 0.12.0) are accepted. There is no command to rename existing groups in 0.12.0.
+
+### Removed
+- `pbs.conf` loading (`/etc/zpbs-backup/pbs.conf`, `~/.config/zpbs-backup/pbs.conf`) and the `PBS_*` connection variables: `PBS_REPOSITORY`, `PBS_USER`, `PBS_API_TOKEN_NAME`, `PBS_SERVER`, `PBS_DATASTORE`, `PBS_API_TOKEN_SECRET`, `PBS_PASSWORD`, `PBS_FINGERPRINT`, `PBS_ENCRYPTION_KEYFILE`, and the legacy `REPOSITORY`, `PASSWORD`, `FINGERPRINT` aliases.
+- `ZPBS_BACKUP_ID_SEPARATOR`; use `zpbs:id-separator`.
+- `show-config`; use `status --connections` and `check`.
+
+### Migration from 0.11.0
+1. On each host, before upgrading the package: `sudo zpbs-backup migrate-config`. It writes `/etc/zpbs-backup/credentials` and prints the `zfs set` commands for your pool roots.
+2. Apply the printed commands, or rerun with `--apply`: `sudo zpbs-backup migrate-config --apply`.
+3. If it printed `Environment=` lines (`ZPBS_PUSHGATEWAY` and the like), put them under `[Service]` in `sudo systemctl edit zpbs-backup.service`.
+4. Upgrade the package, then verify: `zpbs-backup status --connections` and `zpbs-backup check`.
+5. Delete `/etc/zpbs-backup/pbs.conf` once the check passes.
+6. If you used `ZPBS_BACKUP_ID_SEPARATOR`, `migrate-config` sets `zpbs:id-separator` to the same value, so existing backup groups keep their IDs.
+
 ## [0.11.0] - 2026-11-09
 
 ### Added
