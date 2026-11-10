@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
+
+from .config import (
+    DEFAULT_BACKUP_ID_SEPARATOR,
+    parse_repository,
+    validate_backup_id_separator,
+)
 
 
 class Schedule(Enum):
@@ -22,6 +29,10 @@ PROP_RETENTION = "zpbs:retention"
 PROP_NAMESPACE = "zpbs:namespace"
 PROP_PRIORITY = "zpbs:priority"
 PROP_CHANGE_DETECTION = "zpbs:change-detection"
+PROP_REPOSITORY = "zpbs:repository"
+PROP_FINGERPRINT = "zpbs:fingerprint"
+PROP_KEYFILE = "zpbs:keyfile"
+PROP_ID_SEPARATOR = "zpbs:id-separator"
 
 ALL_PROPERTIES = [
     PROP_BACKUP,
@@ -30,7 +41,13 @@ ALL_PROPERTIES = [
     PROP_NAMESPACE,
     PROP_PRIORITY,
     PROP_CHANGE_DETECTION,
+    PROP_REPOSITORY,
+    PROP_FINGERPRINT,
+    PROP_KEYFILE,
+    PROP_ID_SEPARATOR,
 ]
+
+REPOSITORY_FORMAT = "user@realm!tokenname@server:datastore"
 
 # The values proxmox-backup-client accepts for --change-detection-mode.
 CHANGE_DETECTION_MODES = ("legacy", "data", "metadata")
@@ -181,6 +198,53 @@ class Dataset:
             return prop.value
         return None
 
+    def _text(self, prop: str) -> str | None:
+        value = self.properties.get(prop)
+        return value.value if value and value.is_set else None
+
+    @property
+    def repository(self) -> str | None:
+        """Return the PBS repository, or None if not set.
+
+        Raises:
+            InvalidPropertyError: If zpbs:repository is not
+                user@realm!tokenname@server:datastore
+        """
+        value = self._text(PROP_REPOSITORY)
+        if value is not None and parse_repository(value)[0] is None:
+            raise InvalidPropertyError(
+                self.name, PROP_REPOSITORY, value, REPOSITORY_FORMAT
+            )
+        return value
+
+    @property
+    def fingerprint(self) -> str | None:
+        """Return the PBS server certificate fingerprint, or None."""
+        return self._text(PROP_FINGERPRINT)
+
+    @property
+    def keyfile(self) -> str | None:
+        """Return the encryption keyfile path, or None to not encrypt."""
+        return self._text(PROP_KEYFILE)
+
+    @property
+    def id_separator(self) -> str:
+        """Return the backup-id separator (default "-").
+
+        Raises:
+            InvalidPropertyError: If zpbs:id-separator holds characters a PBS
+                backup-id cannot contain
+        """
+        value = self._text(PROP_ID_SEPARATOR)
+        if value is None:
+            return DEFAULT_BACKUP_ID_SEPARATOR
+        try:
+            return validate_backup_id_separator(value)
+        except ValueError:
+            raise InvalidPropertyError(
+                self.name, PROP_ID_SEPARATOR, value, "one or more of [A-Za-z0-9_.-]"
+            ) from None
+
     @property
     def unknown_properties(self) -> list[str]:
         """Return locally set zpbs properties zpbs-backup does not recognise.
@@ -209,6 +273,8 @@ class Dataset:
             lambda: self.schedule,
             lambda: self.priority,
             lambda: self.change_detection_mode,
+            lambda: self.repository,
+            lambda: self.id_separator,
         )
         for accessor in accessors:
             try:
@@ -242,7 +308,7 @@ class Dataset:
         parts = self.name.split("/", 1)
         return parts[1] if len(parts) > 1 else ""
 
-    def get_backup_id(self, hostname: str, separator: str = "-") -> str:
+    def get_backup_id(self, hostname: str, separator: str | None = None) -> str:
         """Generate the backup ID for this dataset.
 
         Format: {hostname}{separator}{dataset-path-with-slashes-replaced}
@@ -253,8 +319,11 @@ class Dataset:
         makes the id REVERSIBLE when dataset name components may themselves
         contain "-" (strip the known hostname, then split on the separator to
         recover pool/dataset paths) — provided no component itself contains
-        the separator.
+        the separator. Without an argument the dataset's own (inherited)
+        zpbs:id-separator applies.
         """
+        if separator is None:
+            separator = self.id_separator
         dataset_part = self.name.replace("/", separator)
         return f"{hostname}{separator}{dataset_part}"
 
@@ -518,6 +587,24 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
                 f"{short} must be one of {list(CHANGE_DETECTION_MODES)}, got '{value}'",
             )
 
+    elif prop == PROP_REPOSITORY:
+        if parse_repository(value)[0] is None:
+            return False, f"{short} must be {REPOSITORY_FORMAT}, got '{value}'"
+
+    elif prop == PROP_FINGERPRINT:
+        if not re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2})*", value):
+            return False, f"{short} must be colon-separated hex bytes (AA:BB:...), got '{value}'"
+
+    elif prop == PROP_KEYFILE:
+        if not value.startswith("/"):
+            return False, f"{short} must be an absolute path, got '{value}'"
+
+    elif prop == PROP_ID_SEPARATOR:
+        try:
+            validate_backup_id_separator(value)
+        except ValueError as e:
+            return False, str(e)
+
     elif prop == PROP_RETENTION:
         # Basic validation - check format like "7d,4w,6m,1y"
         from .retention import parse_retention
@@ -532,8 +619,6 @@ def validate_property_value(prop: str, value: str) -> tuple[bool, str]:
         if not value:
             return False, f"{short} cannot be empty"
         # PBS namespace rules: alphanumeric, dash, underscore, slash
-        import re
-
         if not re.match(r"^[a-zA-Z0-9/_-]+$", value):
             return (
                 False,

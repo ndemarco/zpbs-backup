@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -11,7 +12,8 @@ from datetime import datetime
 from enum import Enum
 from typing import NamedTuple, TextIO
 
-from .config import PBSConfig, get_hostname
+from .config import get_hostname
+from .connections import ConnectionProblem, Connections, Target
 from .pbs import PBSClient
 from .retention import DEFAULT_RETENTION, RetentionPolicy, parse_retention
 from .scheduler import format_last_backup, is_backup_due
@@ -27,6 +29,18 @@ from .zfs import (
 )
 
 SKEW_MARGIN_SECONDS = 60
+
+# Each snapshot's PBS notes record the backup-id separator it was made with, so
+# a later change to zpbs:id-separator is noticed instead of silently starting
+# new backup groups.
+SEPARATOR_NOTE_KEY = "zpbs:id-separator="
+_SEPARATOR_NOTE_RE = re.compile(re.escape(SEPARATOR_NOTE_KEY) + r"([A-Za-z0-9_.\-]+)")
+
+
+def recorded_separator(notes: str | None) -> str | None:
+    """Return the separator recorded in a snapshot's notes, or None."""
+    match = _SEPARATOR_NOTE_RE.search(notes or "")
+    return match.group(1) if match else None
 
 
 def failure_message(result: subprocess.CompletedProcess[str]) -> str:
@@ -149,15 +163,14 @@ class BackupOrchestrator:
 
     def __init__(
         self,
-        config: PBSConfig,
+        connections: Connections,
         dry_run: bool = False,
         force: bool = False,
         change_detection_mode: str | None = None,
         output: TextIO | None = None,
     ):
-        self.config = config
+        self.connections = connections
         self.output = output or sys.stdout
-        self.client = PBSClient(config, output=self.output)
         self.hostname = get_hostname()
         self.dry_run = dry_run
         self.force = force
@@ -235,6 +248,54 @@ class BackupOrchestrator:
 
         return usable
 
+    def _client_of(self, dataset: Dataset) -> PBSClient:
+        """Return the client for the repository this dataset backs up to."""
+        return self.connections.client(self.connections.resolve(dataset), self.output)
+
+    def _separator_conflict(self, client: PBSClient, dataset: Dataset) -> str | None:
+        """Return an error if the dataset's separator differs from its last backup's.
+
+        The newest snapshot of this dataset is found under the separator it
+        recorded, since a changed property also changes the backup-id. A
+        snapshot with no record (made before 0.12.0) is accepted.
+        """
+        separator = dataset.id_separator
+        namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
+
+        newest: tuple[datetime, str] | None = None
+        for snap in client.list_snapshot_details(namespace):
+            recorded = recorded_separator(snap.comment)
+            if snap.timestamp is None or recorded is None or snap.backup_type != "host":
+                continue
+            if snap.backup_id != dataset.get_backup_id(self.hostname, recorded):
+                continue
+            if newest is None or snap.timestamp > newest[0]:
+                newest = (snap.timestamp, recorded)
+
+        if newest is None or newest[1] == separator:
+            return None
+
+        return (
+            f"{dataset.name}: zpbs:id-separator is {separator!r} but its newest backup "
+            f"was made with {newest[1]!r}. Changing it would start new backup groups. "
+            f"Revert it with: zpbs-backup set id-separator={newest[1]} {dataset.name}"
+        )
+
+    def _record_separator(
+        self, client: PBSClient, dataset: Dataset, backup_id: str, namespace: str
+    ) -> None:
+        """Write the separator in use into the newest snapshot's PBS notes."""
+        mine = [
+            s
+            for s in client.list_snapshot_details(namespace)
+            if s.backup_id == backup_id and s.timestamp is not None
+        ]
+        note = f"{SEPARATOR_NOTE_KEY}{dataset.id_separator}"
+        if not mine or not client.set_snapshot_notes(
+            max(mine, key=lambda s: s.timestamp or datetime.min), note, namespace
+        ):
+            self._log("  Warning: could not record the id separator in the snapshot notes")
+
     def plan(self, datasets: list[Dataset]) -> list[PlannedDataset]:
         """Plan which datasets need to be backed up.
 
@@ -248,11 +309,11 @@ class BackupOrchestrator:
         plan = []
 
         for ds in datasets:
-            backup_id = ds.get_backup_id(self.hostname, self.config.backup_id_separator)
+            backup_id = ds.get_backup_id(self.hostname)
             namespace = ds.namespace or ds.get_auto_namespace(self.hostname)
             # Fetched even under --force: the per-dataset freshness metric
             # needs it, and it is the only server call plan() makes.
-            last_backup = self.client.get_last_backup_time(backup_id, namespace)
+            last_backup = self._client_of(ds).get_last_backup_time(backup_id, namespace)
 
             if self.force:
                 plan.append(PlannedDataset(ds, True, last_backup=last_backup))
@@ -302,7 +363,7 @@ class BackupOrchestrator:
         snap_str = datetime.fromtimestamp(snap_creation).strftime("%Y-%m-%d %H:%M")
         return f"unchanged (written=0, latest snap @ {snap_str})"
 
-    def _preflight_skew_check(self) -> None:
+    def _preflight_skew_check(self, client: PBSClient) -> None:
         """Measure clock skew against PBS and decide if skip-unchanged is safe.
 
         On error or excessive skew, disables skip-unchanged for this run and falls
@@ -310,7 +371,7 @@ class BackupOrchestrator:
         """
         if self.force:
             return
-        skew = self.client.get_clock_skew_seconds()
+        skew = client.get_clock_skew_seconds()
         if skew is None:
             self._log(
                 "Warning: could not measure clock skew with PBS; "
@@ -345,7 +406,7 @@ class BackupOrchestrator:
             BackupResult with outcome
         """
         start_time = datetime.now()
-        backup_id = dataset.get_backup_id(self.hostname, self.config.backup_id_separator)
+        backup_id = dataset.get_backup_id(self.hostname)
         namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
         mountpoint = dataset.mountpoint
 
@@ -383,12 +444,14 @@ class BackupOrchestrator:
                 duration_seconds=0.0,
             )
 
+        client = self._client_of(dataset)
+
         # Ensure namespace exists
         if namespace:
-            self.client.create_namespace(namespace)
+            client.create_namespace(namespace)
 
         # Run backup
-        result = self.client.backup(
+        result = client.backup(
             backup_id=backup_id,
             source_path=mountpoint,
             namespace=namespace,
@@ -396,12 +459,14 @@ class BackupOrchestrator:
                 self.change_detection_mode or dataset.change_detection_mode
             ),
             dry_run=self.dry_run,
+            keyfile=dataset.keyfile,
         )
 
         duration = (datetime.now() - start_time).total_seconds()
 
         if result.returncode == 0:
             self._log(f"  Completed in {duration:.1f}s")
+            self._record_separator(client, dataset, backup_id, namespace)
             return BackupResult(
                 dataset=dataset,
                 success=True,
@@ -417,6 +482,55 @@ class BackupOrchestrator:
                 error=error,
                 duration_seconds=duration,
             )
+
+    def _run_group(self, target: Target, members: list[Dataset], summary: BackupSummary) -> None:
+        """Back up the datasets that share one repository, over one client."""
+        try:
+            if self.dry_run:
+                client = self.connections.client(target, self.output)
+            else:
+                client = self.connections.reachable(target, self.output)
+        except ConnectionProblem as e:
+            message = f"{target.repository}: {e}"
+            self._log(f"Skipping {len(members)} dataset(s): {message}")
+            for dataset in members:
+                summary.results.append(
+                    BackupResult(dataset=dataset, success=False, error=message)
+                )
+            return
+
+        self.skip_unchanged_safe = True
+        self._preflight_skew_check(client)
+
+        usable = []
+        for dataset in members:
+            conflict = self._separator_conflict(client, dataset)
+            if conflict is None:
+                usable.append(dataset)
+                continue
+            self._log(f"Skipping {dataset.name}: {conflict}")
+            summary.results.append(BackupResult(dataset=dataset, success=False, error=conflict))
+
+        for dataset, should_backup, skip_reason, skip_cause, last_backup in self.plan(usable):
+            if last_backup is not None:
+                summary.last_backup_times[dataset.name] = last_backup
+
+            if not should_backup:
+                self._log(f"Skipping {dataset.name}: {skip_reason}")
+                summary.results.append(
+                    BackupResult(
+                        dataset=dataset,
+                        success=True,
+                        skipped=True,
+                        skip_reason=skip_reason,
+                        skip_cause=skip_cause,
+                    )
+                )
+            else:
+                result = self.backup_dataset(dataset)
+                summary.results.append(result)
+                if result.backup_time is not None:
+                    summary.last_backup_times[dataset.name] = result.backup_time
 
     def run(self, pattern: str | None = None) -> BackupSummary:
         """Run backups for all discovered datasets.
@@ -441,34 +555,17 @@ class BackupOrchestrator:
 
         datasets = self._reject_misconfigured(datasets, summary)
 
-        self._preflight_skew_check()
-
-        plan = self.plan(datasets)
+        groups, unconnectable = self.connections.group(datasets)
+        for dataset, problem in unconnectable:
+            self._log(f"Skipping {dataset.name}: {problem}")
+            summary.results.append(BackupResult(dataset=dataset, success=False, error=problem))
 
         self._log(f"Found {len(datasets)} dataset(s) to process")
         if self.dry_run:
             self._log("[DRY-RUN MODE]")
 
-        for dataset, should_backup, skip_reason, skip_cause, last_backup in plan:
-            if last_backup is not None:
-                summary.last_backup_times[dataset.name] = last_backup
-
-            if not should_backup:
-                self._log(f"Skipping {dataset.name}: {skip_reason}")
-                summary.results.append(
-                    BackupResult(
-                        dataset=dataset,
-                        success=True,
-                        skipped=True,
-                        skip_reason=skip_reason,
-                        skip_cause=skip_cause,
-                    )
-                )
-            else:
-                result = self.backup_dataset(dataset)
-                summary.results.append(result)
-                if result.backup_time is not None:
-                    summary.last_backup_times[dataset.name] = result.backup_time
+        for target, members in groups.items():
+            self._run_group(target, members, summary)
 
         summary.end_time = datetime.now()
 
@@ -517,13 +614,12 @@ class PruneOrchestrator:
 
     def __init__(
         self,
-        config: PBSConfig,
+        connections: Connections,
         dry_run: bool = False,
         output: TextIO | None = None,
     ):
-        self.config = config
+        self.connections = connections
         self.output = output or sys.stdout
-        self.client = PBSClient(config, output=self.output)
         self.hostname = get_hostname()
         self.dry_run = dry_run
 
@@ -539,18 +635,22 @@ class PruneOrchestrator:
         Returns:
             True if successful
         """
-        backup_id = dataset.get_backup_id(self.hostname, self.config.backup_id_separator)
-        namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
-
         try:
+            client = self.connections.client(self.connections.resolve(dataset), self.output)
+            backup_id = dataset.get_backup_id(self.hostname)
             policy = get_retention_policy(dataset)
+        except ConnectionProblem as e:
+            self._log(f"Refusing to prune {dataset.name}: {e}")
+            return False
         except InvalidPropertyError as e:
             self._log(f"Refusing to prune {dataset.name}: {e}")
             return False
 
+        namespace = dataset.namespace or dataset.get_auto_namespace(self.hostname)
+
         self._log(f"Pruning {dataset.name} ({backup_id})")
 
-        result = self.client.prune(
+        result = client.prune(
             backup_type="host",
             backup_id=backup_id,
             keep_daily=policy.keep_daily,
@@ -564,7 +664,7 @@ class PruneOrchestrator:
         return result.returncode == 0
 
     def run(self, pattern: str | None = None) -> tuple[int, int]:
-        """Prune all discovered datasets.
+        """Prune all discovered datasets, one repository at a time.
 
         Args:
             pattern: Optional glob pattern to filter datasets
@@ -585,14 +685,21 @@ class PruneOrchestrator:
         if self.dry_run:
             self._log("[DRY-RUN MODE]")
 
+        groups, unconnectable = self.connections.group(datasets)
+
         success = 0
         failed = 0
 
-        for dataset in datasets:
-            if self.prune_dataset(dataset):
-                success += 1
-            else:
-                failed += 1
+        for dataset, problem in unconnectable:
+            self._log(f"Refusing to prune {dataset.name}: {problem}")
+            failed += 1
+
+        for members in groups.values():
+            for dataset in members:
+                if self.prune_dataset(dataset):
+                    success += 1
+                else:
+                    failed += 1
 
         self._log("")
         self._log(f"Prune complete: {success} succeeded, {failed} failed")

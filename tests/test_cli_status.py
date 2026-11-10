@@ -10,8 +10,9 @@ from click.testing import CliRunner
 
 from zpbs_backup import cli as cli_mod
 from zpbs_backup.cli import main
-from zpbs_backup.config import PBSConfig
-from zpbs_backup.zfs import PROP_BACKUP, PROP_SCHEDULE, Dataset, PropertyValue
+from zpbs_backup.config import Credentials
+from zpbs_backup.pbs import PBSClient
+from zpbs_backup.zfs import PROP_BACKUP, PROP_REPOSITORY, PROP_SCHEDULE, Dataset, PropertyValue
 
 
 @pytest.fixture
@@ -20,6 +21,7 @@ def bad_dataset() -> Dataset:
         name="tank/data",
         properties={
             PROP_BACKUP: PropertyValue(value="true", source="local"),
+            PROP_REPOSITORY: PropertyValue(value="u@p!t@srv:store", source="local"),
             PROP_SCHEDULE: PropertyValue(value="hourly", source="local"),
         },
         mountpoint="/tank/data",
@@ -29,13 +31,13 @@ def bad_dataset() -> Dataset:
 
 def _invoke(args, dataset):
     runner = CliRunner()
-    config = PBSConfig(repository="u@p!t@srv:store", server="srv")
+    credentials = Credentials({"u@p!t@srv:store": "secret"})
 
-    with patch.object(cli_mod, "load_config", return_value=config), \
-         patch.object(cli_mod, "_check_pbs_connection"), \
+    with patch.object(cli_mod, "load_credentials", return_value=credentials), \
+         patch.object(PBSClient, "check_connection"), \
          patch.object(cli_mod, "get_hostname", return_value="storage-server"), \
          patch.object(cli_mod, "get_all_datasets", return_value=[dataset]), \
-         patch.object(cli_mod.PBSClient, "get_last_backup_time", return_value=None):
+         patch.object(PBSClient, "get_last_backup_time", return_value=None):
         return runner.invoke(main, args)
 
 

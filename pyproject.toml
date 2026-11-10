@@ -93,7 +93,7 @@ disallow_untyped_decorators = false
 
 # cli is a leaf module: nothing imports from it but the console-script entry
 # point and the tests, which patch a collaborator where cli looks it up
-# (cli.PBSClient) — the one correct place to patch it. Re-export hygiene buys
+# (cli.load_credentials, cli.get_all_datasets) — the one correct place to patch it. Re-export hygiene buys
 # nothing here and would force the tests to patch the wrong module.
 [[tool.mypy.overrides]]
 module = "zpbs_backup.cli"

@@ -121,6 +121,8 @@ class BackupSnapshot:
     backup_id: str
     timestamp: datetime | None = None
     size: int | None = None
+    # The snapshot's PBS notes.
+    comment: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackupSnapshot:
@@ -146,6 +148,7 @@ class BackupSnapshot:
             backup_id=data.get("backup-id", ""),
             timestamp=timestamp,
             size=data.get("size"),
+            comment=data.get("comment"),
         )
 
 
@@ -331,6 +334,49 @@ class PBSClient:
 
         return list(groups.values())
 
+    def list_snapshot_details(self, namespace: str | None = None) -> list[BackupSnapshot]:
+        """List individual host snapshots, with their notes.
+
+        Unlike list_snapshots (one row per group), each row here is one
+        snapshot carrying its own backup-time and comment.
+        """
+        args = ["snapshot", "list", "--output-format", "json"]
+        if namespace:
+            args.extend(["--ns", namespace])
+
+        try:
+            result = self._run(args, check=False)
+        except subprocess.TimeoutExpired:
+            return []
+        if result.returncode != 0:
+            return []
+
+        try:
+            return [BackupSnapshot.from_dict(item) for item in json.loads(result.stdout)]
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return []
+
+    def set_snapshot_notes(
+        self, snapshot: BackupSnapshot, notes: str, namespace: str | None = None
+    ) -> bool:
+        """Replace a snapshot's PBS notes. Returns True on success."""
+        if snapshot.timestamp is None:
+            return False
+        stamp = snapshot.timestamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        args = [
+            "snapshot",
+            "notes",
+            "update",
+            f"{snapshot.backup_type}/{snapshot.backup_id}/{stamp}",
+            notes,
+        ]
+        if namespace:
+            args.extend(["--ns", namespace])
+        try:
+            return self._run(args, check=False).returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+
     def get_last_backup_time(
         self, backup_id: str, namespace: str | None = None
     ) -> datetime | None:
@@ -363,6 +409,7 @@ class PBSClient:
         namespace: str | None = None,
         change_detection_mode: str | None = None,
         dry_run: bool = False,
+        keyfile: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a backup.
 
@@ -373,6 +420,7 @@ class PBSClient:
             namespace: Optional namespace
             change_detection_mode: Change detection mode (legacy, data, metadata)
             dry_run: If True, don't actually run the backup
+            keyfile: Encryption key file; None means do not encrypt
 
         Returns:
             CompletedProcess from the backup command. On failure its stdout
@@ -386,10 +434,8 @@ class PBSClient:
             backup_id,
         ]
 
-        if self.config.keyfile is not None:
-            args.extend(
-                ["--keyfile", self.config.keyfile]
-            )
+        if keyfile is not None:
+            args.extend(["--keyfile", keyfile])
 
         if namespace:
             args.extend(["--ns", namespace])

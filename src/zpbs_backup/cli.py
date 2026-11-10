@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import click
 
@@ -18,23 +21,31 @@ from .backup import (
     SkipCause,
 )
 from .config import (
-    PBSConfig,
-    get_all_config_sources,
+    CREDENTIALS_PATH,
+    LEGACY_CONFIG_PATH,
+    Credentials,
+    CredentialsError,
     get_hostname,
-    load_config,
-    mask_secret,
+    load_credentials,
+    read_legacy_config,
 )
+from .connections import ConnectionProblem, Connections, Target
 from .lock import EXIT_ALREADY_RUNNING, AlreadyRunning, run_lock
 from .metrics import report_metrics
 from .notify import format_summary_for_notification, get_notification_config, send_notification
-from .pbs import PBSClient
 from .scheduler import format_last_backup, format_time_delta, is_backup_due, time_until_due
 from .zfs import (
     ALL_PROPERTIES,
     CHANGE_DETECTION_MODES,
     PROP_BACKUP,
+    PROP_FINGERPRINT,
+    PROP_ID_SEPARATOR,
+    PROP_KEYFILE,
+    PROP_REPOSITORY,
     Dataset,
+    InvalidPropertyError,
     discover_datasets,
+    enabled_datasets,
     get_all_datasets,
     get_dataset,
     inherit_all_properties,
@@ -44,13 +55,32 @@ from .zfs import (
 )
 
 
-def _check_pbs_connection(client: PBSClient) -> None:
-    """Check PBS connectivity and exit with a clear message on failure."""
+def _load_connections() -> Connections:
+    """Read the credentials file and return the per-repository connections."""
     try:
-        client.check_connection()
-    except ConnectionError as e:
+        credentials = load_credentials()
+    except CredentialsError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    return Connections(credentials)
+
+
+def _last_backup(
+    connections: Connections, dataset: Dataset, hostname: str
+) -> tuple[datetime | None, str | None]:
+    """Return (newest backup time, problem) for a dataset.
+
+    The problem is set, and the time None, when the dataset has no usable
+    connection; nothing is contacted in that case.
+    """
+    try:
+        client = connections.reachable(connections.resolve(dataset))
+    except ConnectionProblem as e:
+        return None, str(e)
+
+    backup_id = dataset.get_backup_id(hostname)
+    namespace = dataset.namespace or dataset.get_auto_namespace(hostname)
+    return client.get_last_backup_time(backup_id, namespace), None
 
 
 @click.group()
@@ -67,16 +97,19 @@ def main() -> None:
 @main.command()
 @click.option("-o", "--orphans", is_flag=True, help="Show orphaned backups in PBS")
 @click.option("-j", "--json", "json_output", is_flag=True, help="Output as JSON")
-def status(orphans: bool, json_output: bool) -> None:
+@click.option(
+    "--connections",
+    "show_connections",
+    is_flag=True,
+    help="Show each backup-enabled dataset's effective connection settings",
+)
+def status(orphans: bool, json_output: bool, show_connections: bool) -> None:
     """Show backup status for all discovered datasets."""
-    try:
-        config = load_config()
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    if show_connections:
+        _show_connections(json_output)
+        return
 
-    client = PBSClient(config)
-    _check_pbs_connection(client)
+    connections = _load_connections()
     hostname = get_hostname()
 
     # Get all datasets with any zpbs property
@@ -85,14 +118,16 @@ def status(orphans: bool, json_output: bool) -> None:
     if json_output:
         output_data = []
         for ds in datasets:
-            backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
-            namespace = ds.namespace or ds.get_auto_namespace(hostname)
-            last_backup = (
-                client.get_last_backup_time(backup_id, namespace) if ds.backup_enabled else None
-            )
-
             errors = ds.property_errors()
             readable = not errors
+            last_backup, problem = (
+                _last_backup(connections, ds, hostname)
+                if ds.backup_enabled and readable
+                else (None, None)
+            )
+            namespace = (
+                (ds.namespace or ds.get_auto_namespace(hostname)) if ds.backup_enabled else None
+            )
 
             output_data.append({
                 "dataset": ds.name,
@@ -101,13 +136,14 @@ def status(orphans: bool, json_output: bool) -> None:
                 "priority": ds.priority if readable else None,
                 "change_detection": ds.change_detection_mode if readable else None,
                 "retention": ds.retention,
-                "namespace": namespace if ds.backup_enabled else None,
+                "namespace": namespace,
                 "last_backup": last_backup.isoformat() if last_backup else None,
                 "backup_due": (
                     is_backup_due(ds.schedule, last_backup)
-                    if ds.backup_enabled and readable
+                    if ds.backup_enabled and readable and problem is None
                     else None
                 ),
+                "connection_problem": problem,
                 "property_errors": [str(e) for e in errors],
                 "unknown_properties": ds.unknown_properties,
             })
@@ -131,6 +167,7 @@ def status(orphans: bool, json_output: bool) -> None:
     click.echo("-" * (name_width + 60))
 
     property_errors = []
+    connection_problems = []
     unknown = {ds.name: ds.unknown_properties for ds in datasets if ds.unknown_properties}
 
     for ds in datasets:
@@ -146,16 +183,19 @@ def status(orphans: bool, json_output: bool) -> None:
         elif ds.backup_enabled:
             schedule = ds.schedule.value
             priority = str(ds.priority)
-            backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
-            namespace = ds.namespace or ds.get_auto_namespace(hostname)
-            last_backup = client.get_last_backup_time(backup_id, namespace)
-            last_str = format_last_backup(last_backup)
+            last_backup, problem = _last_backup(connections, ds, hostname)
 
-            if is_backup_due(ds.schedule, last_backup):
-                status_str = "due"
+            if problem is not None:
+                connection_problems.append(problem)
+                last_str = "-"
+                status_str = "no connection"
             else:
-                until = time_until_due(ds.schedule, last_backup)
-                status_str = f"in {format_time_delta(until)}"
+                last_str = format_last_backup(last_backup)
+                if is_backup_due(ds.schedule, last_backup):
+                    status_str = "due"
+                else:
+                    until = time_until_due(ds.schedule, last_backup)
+                    status_str = f"in {format_time_delta(until)}"
         else:
             schedule = "-"
             priority = "-"
@@ -173,6 +213,12 @@ def status(orphans: bool, json_output: bool) -> None:
         for error in property_errors:
             click.echo(f"  {error}")
 
+    if connection_problems:
+        click.echo("")
+        click.echo("Connection problems:")
+        for problem_text in connection_problems:
+            click.echo(f"  {problem_text}")
+
     if unknown:
         click.echo("")
         click.echo("Unknown properties (ignored by zpbs-backup):")
@@ -181,34 +227,112 @@ def status(orphans: bool, json_output: bool) -> None:
 
     if orphans:
         click.echo("")
-        _show_orphans(client, datasets, hostname, config.backup_id_separator)
+        _show_orphans(connections, datasets, hostname)
 
 
-def _show_orphans(
-    client: PBSClient, datasets: list[Dataset], hostname: str, separator: str
-) -> None:
-    """Show orphaned backup groups in PBS."""
-    click.echo("Checking for orphaned backups...")
+def _property_view(
+    dataset: Dataset, prop: str, default: str | None = None
+) -> dict[str, str | None]:
+    """A property's raw value and where it came from, for the connection view."""
+    value = dataset.properties.get(prop)
+    if value is not None and value.is_set:
+        return {"value": value.value, "source": value.source}
+    return {"value": default, "source": "default" if default is not None else "not set"}
 
-    # Get all expected backup IDs
-    expected_ids = {ds.get_backup_id(hostname, separator) for ds in datasets if ds.backup_enabled}
 
-    # Get all backup groups from PBS
-    all_groups = client.list_all_backup_groups()
+def _show_connections(json_output: bool) -> None:
+    """Show each backup-enabled dataset's effective connection settings.
 
-    orphans = []
-    for namespace, group in all_groups:
-        if group.backup_id not in expected_ids:
-            orphans.append((namespace, group))
+    Reads properties and the credentials file only; contacts no server and
+    never prints a secret.
+    """
+    credentials: Credentials | None = None
+    credentials_error: str | None = None
+    try:
+        credentials = load_credentials()
+    except CredentialsError as e:
+        credentials_error = str(e)
 
-    if not orphans:
-        click.echo("No orphaned backups found.")
+    rows = []
+    for ds in enabled_datasets(get_all_datasets()):
+        repository = _property_view(ds, PROP_REPOSITORY)
+        if credentials is None:
+            has_credentials = "unknown"
+        elif repository["value"] and credentials.has_entry(repository["value"]):
+            has_credentials = "yes"
+        else:
+            has_credentials = "no"
+
+        rows.append({
+            "dataset": ds.name,
+            "repository": repository,
+            "fingerprint": _property_view(ds, PROP_FINGERPRINT),
+            "keyfile": _property_view(ds, PROP_KEYFILE),
+            "id_separator": _property_view(ds, PROP_ID_SEPARATOR, default="-"),
+            "credentials": has_credentials,
+        })
+
+    if json_output:
+        click.echo(json.dumps(
+            {"credentials_error": credentials_error, "datasets": rows}, indent=2
+        ))
         return
 
-    click.echo(f"Found {len(orphans)} orphaned backup group(s):")
-    for namespace, group in orphans:
-        ns_str = f" (ns: {namespace})" if namespace else ""
-        click.echo(f"  - {group.backup_type}/{group.backup_id}{ns_str}")
+    if credentials_error:
+        click.echo(f"Credentials: {credentials_error}", err=True)
+
+    if not rows:
+        click.echo("No backup-enabled datasets.")
+        return
+
+    for row in rows:
+        click.echo(str(row["dataset"]))
+        for label, key in (
+            ("repository", "repository"),
+            ("fingerprint", "fingerprint"),
+            ("keyfile", "keyfile"),
+            ("id-separator", "id_separator"),
+        ):
+            view = row[key]
+            assert isinstance(view, dict)
+            click.echo(f"  {label:<13}{view['value'] or '-'}  ({view['source']})")
+        click.echo(f"  {'credentials':<13}{row['credentials']}")
+
+
+def _show_orphans(connections: Connections, datasets: list[Dataset], hostname: str) -> None:
+    """Show orphaned backup groups in PBS, repository by repository."""
+    click.echo("Checking for orphaned backups...")
+
+    groups, problems = connections.group(enabled_datasets(datasets))
+    for _dataset, problem in problems:
+        click.echo(f"  Cannot check: {problem}")
+
+    found = 0
+    for target in groups:
+        try:
+            client = connections.reachable(target)
+        except ConnectionProblem as e:
+            click.echo(f"  Cannot check {target.repository}: {e}")
+            continue
+
+        expected_ids = {
+            ds.get_backup_id(hostname)
+            for other, others in groups.items()
+            if other.repository == target.repository
+            for ds in others
+        }
+        for namespace, group in client.list_all_backup_groups():
+            if group.backup_id not in expected_ids:
+                found += 1
+                ns_str = f" (ns: {namespace})" if namespace else ""
+                click.echo(
+                    f"  - {group.backup_type}/{group.backup_id}{ns_str} [{target.repository}]"
+                )
+
+    if found == 0:
+        click.echo("No orphaned backups found.")
+    else:
+        click.echo(f"Found {found} orphaned backup group(s).")
 
 
 SYSTEMD_UNIT = "zpbs-backup.service"
@@ -242,19 +366,11 @@ def run(
         _run_via_systemd()
         return
 
-    try:
-        config = load_config()
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
+    connections = _load_connections()
     hostname = get_hostname()
 
-    if not dry_run:
-        _check_pbs_connection(PBSClient(config))
-
     orchestrator = BackupOrchestrator(
-        config=config,
+        connections=connections,
         dry_run=dry_run,
         force=force,
         change_detection_mode=change_detection_mode,
@@ -317,168 +433,230 @@ def audit() -> None:
     - Datasets with zpbs:backup=true that have never been backed up
     - Backup groups in PBS with no matching ZFS dataset
     """
-    try:
-        config = load_config()
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-    client = PBSClient(config)
-    _check_pbs_connection(client)
+    connections = _load_connections()
     hostname = get_hostname()
 
-    # Get enabled datasets
     datasets = discover_datasets()
-    expected_ids = {ds.get_backup_id(hostname, config.backup_id_separator): ds for ds in datasets}
+    groups, problems = connections.group(datasets)
 
     click.echo(f"Auditing {len(datasets)} dataset(s)...")
     click.echo("")
 
-    # Check for never-backed-up datasets
-    never_backed_up = []
-    for ds in datasets:
-        backup_id = ds.get_backup_id(hostname, config.backup_id_separator)
-        namespace = ds.namespace or ds.get_auto_namespace(hostname)
-        last_backup = client.get_last_backup_time(backup_id, namespace)
-        if last_backup is None:
-            never_backed_up.append(ds)
+    for _dataset, problem in problems:
+        click.echo(f"Cannot audit: {problem}")
 
-    if never_backed_up:
-        click.echo("Datasets never backed up:")
-        for ds in never_backed_up:
-            click.echo(f"  - {ds.name}")
-        click.echo("")
-    else:
-        click.echo("All enabled datasets have been backed up at least once.")
-        click.echo("")
+    for target, members in groups.items():
+        click.echo(f"Repository {target.repository}")
+        try:
+            client = connections.reachable(target)
+        except ConnectionProblem as e:
+            click.echo(f"  Cannot audit: {e}")
+            continue
 
-    # Check for orphaned PBS groups
-    click.echo("Checking for orphaned backup groups...")
-    all_groups = client.list_all_backup_groups()
+        expected_ids = {ds.get_backup_id(hostname) for ds in members}
 
-    orphans = []
-    for group_ns, group in all_groups:
-        if group.backup_id not in expected_ids:
-            orphans.append((group_ns, group))
-
-    if orphans:
-        click.echo(f"Found {len(orphans)} orphaned backup group(s):")
-        for group_ns, group in orphans:
-            ns_str = f" (ns: {group_ns})" if group_ns else ""
-            last = group.last_backup.strftime("%Y-%m-%d") if group.last_backup else "unknown"
-            click.echo(
-                f"  - {group.backup_type}/{group.backup_id}{ns_str} "
-                f"({group.snapshot_count} snapshots, last: {last})"
+        never_backed_up = [
+            ds
+            for ds in members
+            if client.get_last_backup_time(
+                ds.get_backup_id(hostname),
+                ds.namespace or ds.get_auto_namespace(hostname),
             )
-        click.echo("")
-        click.echo("To remove orphaned backups, use proxmox-backup-client directly.")
-    else:
-        click.echo("No orphaned backup groups found.")
+            is None
+        ]
 
-
-@main.command("show-config")
-@click.option("-v", "--verbose", is_flag=True, help="Show all config sources in priority order")
-@click.option("-j", "--json", "json_output", is_flag=True, help="Machine-parseable JSON output")
-def show_config(verbose: bool, json_output: bool) -> None:
-    """Show PBS connection configuration and verify connectivity.
-
-    Displays the active configuration source, parsed connection details,
-    and tests connectivity to the PBS server.
-
-    Use --verbose to see all config sources in priority order.
-    Use --json for machine-parseable output (suitable for automation).
-    """
-    try:
-        config = load_config()
-    except ValueError as e:
-        if json_output:
-            click.echo(json.dumps({"error": str(e), "connected": False}, indent=2))
+        if never_backed_up:
+            click.echo("  Datasets never backed up:")
+            for ds in never_backed_up:
+                click.echo(f"    - {ds.name}")
         else:
-            click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+            click.echo("  All enabled datasets have been backed up at least once.")
 
-    if json_output:
-        _show_config_json(config)
+        orphans = [
+            (group_ns, group)
+            for group_ns, group in client.list_all_backup_groups()
+            if group.backup_id not in expected_ids
+        ]
+
+        if orphans:
+            click.echo(f"  Found {len(orphans)} orphaned backup group(s):")
+            for group_ns, group in orphans:
+                ns_str = f" (ns: {group_ns})" if group_ns else ""
+                last = group.last_backup.strftime("%Y-%m-%d") if group.last_backup else "unknown"
+                click.echo(
+                    f"    - {group.backup_type}/{group.backup_id}{ns_str} "
+                    f"({group.snapshot_count} snapshots, last: {last})"
+                )
+            click.echo("  To remove orphaned backups, use proxmox-backup-client directly.")
+        else:
+            click.echo("  No orphaned backup groups found.")
+        click.echo("")
+
+
+@main.command()
+def check() -> None:
+    """Log in once to each repository a backup-enabled dataset uses.
+
+    A repository with no entry in the credentials file is reported as failed
+    and not contacted. Exits non-zero if anything fails.
+    """
+    connections = _load_connections()
+    datasets = discover_datasets()
+
+    if not datasets:
+        click.echo("No backup-enabled datasets.")
         return
 
-    # Normal / verbose output
-    click.echo("PBS connection:")
-    click.echo(f"  Source:           {config.active_source}")
-    click.echo(f"  Server:           {config.server or '(unknown)'}")
-    click.echo(f"  User:             {config.user or '(unknown)'}")
-    click.echo(f"  API token name:   {config.token_name or '(unknown)'}")
-    click.echo(f"  Datastore:        {config.datastore or '(unknown)'}")
-    click.echo(f"  Token secret:     {mask_secret(config.password)}")
-    click.echo(f"  Fingerprint:      {config.fingerprint or '(not set)'}")
-    if config.keyfile is None:
-        click.echo("  Encryption:       Disabled")
+    targets: dict[Target, list[str]] = {}
+    failed = 0
+
+    for ds in datasets:
+        try:
+            repository = ds.repository
+        except InvalidPropertyError as e:
+            click.echo(f"INVALID        {e}")
+            failed += 1
+            continue
+
+        if repository is None:
+            click.echo(f"NO REPOSITORY  {ds.name}: zpbs:repository is not set")
+            failed += 1
+            continue
+
+        targets.setdefault(Target(repository, ds.fingerprint), []).append(ds.name)
+
+    for target, names in targets.items():
+        count = f"{len(names)} dataset(s)"
+        if not connections.credentials.has_entry(target.repository):
+            click.echo(f"NO CREDENTIAL  {target.repository} ({count})")
+            failed += 1
+            continue
+
+        try:
+            connections.reachable(target)
+        except ConnectionProblem as e:
+            click.echo(f"REJECTED       {target.repository} ({count}): {e}")
+            failed += 1
+        else:
+            click.echo(f"OK             {target.repository} ({count})")
+
+    if failed:
+        sys.exit(1)
+
+
+REPORTING_UNIT = "zpbs-backup.service"
+
+
+@main.command("migrate-config")
+@click.option(
+    "--pbs-conf",
+    "pbs_conf",
+    type=click.Path(path_type=Path),
+    default=LEGACY_CONFIG_PATH,
+    show_default=True,
+    help="The 0.11.0 configuration file to read",
+)
+@click.option(
+    "--credentials",
+    "credentials_path",
+    type=click.Path(path_type=Path),
+    default=CREDENTIALS_PATH,
+    show_default=True,
+    help="Credentials file to create (never overwritten)",
+)
+@click.option("--apply", is_flag=True, help="Run the printed zfs set commands")
+def migrate_config(pbs_conf: Path, credentials_path: Path, apply: bool) -> None:
+    """Convert a 0.11.0 pbs.conf into properties plus the credentials file.
+
+    Writes the credentials file unless one exists, prints the zfs set
+    commands for the pool roots (and runs them only with --apply), and prints
+    ZPBS_* reporting settings as Environment= lines. pbs.conf stays in place.
+    """
+    try:
+        legacy = read_legacy_config(pbs_conf)
+    except OSError as e:
+        click.echo(f"Error: cannot read {pbs_conf}: {e.strerror}", err=True)
+        sys.exit(1)
+
+    if not legacy.repository:
+        click.echo(f"Error: {pbs_conf} has no PBS_REPOSITORY (or user/token/server/datastore).",
+                   err=True)
+        sys.exit(1)
+
+    click.echo(f"Read {pbs_conf}")
+
+    # Credentials
+    click.echo("")
+    section = f"[{legacy.repository}]"
+    if not legacy.secret:
+        click.echo(f"Credentials: pbs.conf holds no token secret; add it to {credentials_path}:")
+        click.echo(f"  {section}")
+        click.echo("  secret = <token secret>")
+    elif _write_credentials(credentials_path, legacy.repository, legacy.secret):
+        click.echo(f"Credentials: wrote {credentials_path} (mode 0600)")
     else:
-        click.echo(f"  Encryption:       Enabled using '{config.keyfile}'")
+        click.echo(f"Credentials: {credentials_path} exists and was not changed. Add:")
+        click.echo(f"  {section}")
+        click.echo("  secret = <the token secret from pbs.conf>")
 
-    if verbose:
+    # Properties
+    properties = [(PROP_REPOSITORY, legacy.repository)]
+    if legacy.fingerprint:
+        properties.append((PROP_FINGERPRINT, legacy.fingerprint))
+    if legacy.keyfile:
+        properties.append((PROP_KEYFILE, legacy.keyfile))
+    if legacy.separator:
+        properties.append((PROP_ID_SEPARATOR, legacy.separator))
+
+    pools = sorted({ds.pool for ds in enabled_datasets(get_all_datasets())})
+    click.echo("")
+    click.echo("Properties (pool roots; datasets inherit):")
+    for pool in pools or ["<pool>"]:
+        for prop, value in properties:
+            click.echo(f"  zfs set {shlex.quote(f'{prop}={value}')} {pool}")
+    if not pools:
+        click.echo("  No backup-enabled datasets found; replace <pool> with your pool names.")
+
+    # Reporting settings
+    if legacy.reporting:
         click.echo("")
-        _show_config_sources_verbose()
+        click.echo(f"Reporting settings, for a drop-in (systemctl edit {REPORTING_UNIT}):")
+        click.echo("  [Service]")
+        for key, value in legacy.reporting.items():
+            click.echo(f"  Environment={shlex.quote(f'{key}={value}')}")
 
     click.echo("")
-    click.echo(f"Effective PBS_REPOSITORY: {config.repository}")
-    click.echo("")
+    click.echo(f"{pbs_conf} was left in place; delete it once the above is applied.")
 
-    # Connection check
-    click.echo("Checking connection... ", nl=False)
-    client = PBSClient(config)
-    try:
-        client.check_connection()
-        click.echo("OK")
-    except ConnectionError as e:
-        click.echo("FAILED")
-        click.echo(f"  {e}", err=True)
+    if not apply:
+        click.echo("Run again with --apply to set the properties.")
+        return
+
+    if not pools:
+        click.echo("Error: --apply needs at least one backup-enabled dataset.", err=True)
         sys.exit(1)
 
+    for pool in pools:
+        for prop, value in properties:
+            try:
+                set_property(pool, prop, value)
+            except subprocess.CalledProcessError as e:
+                stderr = e.stderr.strip() if e.stderr else ""
+                click.echo(f"Error: zfs set {prop} on {pool} failed: {stderr}", err=True)
+                sys.exit(1)
+    click.echo(f"Applied {len(properties)} propert(ies) to {', '.join(pools)}.")
 
-def _show_config_json(config: PBSConfig) -> None:
-    """Output config as JSON (no secrets)."""
-    from .pbs import PBSClient
 
-    connected = False
-    error = None
-    client = PBSClient(config)
+def _write_credentials(path: Path, repository: str, secret: str) -> bool:
+    """Create the credentials file mode 0600. Returns False if it already exists."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        client.check_connection()
-        connected = True
-    except ConnectionError as e:
-        error = str(e)
-
-    data = {
-        "server": config.server,
-        "user": config.user,
-        "api_token_name": config.token_name,
-        "datastore": config.datastore,
-        "fingerprint": config.fingerprint,
-        "keyfile": config.keyfile,
-        "repository": config.repository,
-        "active_source": config.active_source,
-        "connected": connected,
-    }
-    if error:
-        data["error"] = error
-    click.echo(json.dumps(data, indent=2))
-    if not connected:
-        sys.exit(1)
-
-
-def _show_config_sources_verbose() -> None:
-    """Show all config sources in priority order."""
-    sources = get_all_config_sources()
-
-    click.echo("Configuration sources (highest priority first):")
-    for i, source in enumerate(sources, 1):
-        marker = "  [active]" if source.status == "active" else ""
-        click.echo(f"  {i}. {source.name}: {source.status}{marker}")
-        if source.variables:
-            for key, value in source.variables.items():
-                if "SECRET" in key or "PASSWORD" in key:
-                    value = mask_secret(value)
-                click.echo(f"     {key}={value}")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w") as f:
+        f.write(f"[{repository}]\nsecret = {secret}\n")
+    return True
 
 
 @main.command()
@@ -486,14 +664,8 @@ def _show_config_sources_verbose() -> None:
 @click.option("-d", "--dataset", "pattern", help="Only prune datasets matching pattern")
 def prune(dry_run: bool, pattern: str | None) -> None:
     """Apply retention policies to backup snapshots."""
-    try:
-        config = load_config()
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
     orchestrator = PruneOrchestrator(
-        config=config,
+        connections=_load_connections(),
         dry_run=dry_run,
     )
 
@@ -580,6 +752,7 @@ def set_property_cmd(property_value: str, dataset: str, clear: bool, recursive: 
         zpbs-backup set backup=true tank/data
         zpbs-backup set schedule=daily tank/data
         zpbs-backup set change-detection=metadata tank/data
+        zpbs-backup set repository=user@realm!token@server:datastore tank
         zpbs-backup set backup=false --clear tank/data
     """
     if "=" not in property_value:

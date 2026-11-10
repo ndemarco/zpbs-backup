@@ -31,7 +31,7 @@ sudo dpkg -i zpbs-backup_<version>_amd64.deb
 sudo apt-get install -f  # Install any missing dependencies
 ```
 
-This installs everything: CLI, systemd timer, and config directory. The timer is enabled automatically -- configure PBS credentials at `/etc/zpbs-backup/pbs.conf`, then start the timer:
+This installs everything: CLI, systemd timer, and config directory. The timer is enabled automatically -- set the repository property and credentials file (see Quick Start), then start the timer:
 
 ```bash
 sudo systemctl start zpbs-backup.timer
@@ -54,7 +54,7 @@ Requires `python3.11` from AppStream:
 sudo dnf install python3.11
 ```
 
-Configure PBS credentials at `/etc/zpbs-backup/pbs.conf`, then start the timer:
+Set the repository properties and credentials file (see Quick Start), then start the timer:
 
 ```bash
 sudo systemctl start zpbs-backup.timer
@@ -108,65 +108,48 @@ Then configure PBS credentials and set up systemd units as described in [Systemd
 > are the *intersection* of the user's and the token's permissions. You must grant
 > permissions on the datastore to **both** the user (e.g. `backup@pbs`) **and** the
 > token (e.g. `backup@pbs!mytoken`). In the PBS web UI: Configuration > Access Control >
-> Permissions > Add — grant **DatastoreAdmin** on `/datastore/yourstore` to both.
+> Permissions > Add -- grant **DatastoreAdmin** on `/datastore/yourstore` to both.
+
+See [Connection Settings](#connection-settings). Upgrading from 0.11.0: run `sudo zpbs-backup migrate-config`.
+
+Set the repository and fingerprint once, on the pool root. Every dataset in the pool inherits them:
 
 ```bash
-# Option 1: Environment variables (individual parts — recommended)
-export PBS_USER="backup@pbs"
-export PBS_API_TOKEN_NAME="mytoken"
-export PBS_SERVER="pbs.example.com"
-export PBS_DATASTORE="backups"
-export PBS_API_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-export PBS_FINGERPRINT="AA:BB:CC:..."
-
-# Omit following if you don't want encryption enabled.
-export PBS_ENCRYPTION_KEYFILE="/path/to/key.enc"
-
-# Option 2: Config file
-# Config files are checked in priority order:
-#   1. ~/.config/zpbs-backup/pbs.conf  (per-user)
-#   2. /etc/zpbs-backup/pbs.conf       (system-wide)
+sudo zpbs-backup set repository=backup@pbs!mytoken@pbs.example.com:backups tank
+sudo zpbs-backup set fingerprint=AA:BB:CC:... tank
 ```
 
-Example `/etc/zpbs-backup/pbs.conf`:
+Put the token secret in the root-only credentials file `/etc/zpbs-backup/credentials` (mode `0600`), bound to that exact repository:
 
-```bash
-# PBS API token configuration
-PBS_USER="backup@pbs"
-PBS_API_TOKEN_NAME="mytoken"
-PBS_SERVER="pbs.example.com"
-PBS_DATASTORE="backups"
-PBS_API_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-PBS_FINGERPRINT="AA:BB:CC:..."
-
-# Omit following if you don't want encryption enabled.
-PBS_ENCRYPTION_KEYFILE="/path/to/key.enc"
-
-# Shell variable interpolation is supported:
-# PBS_REPOSITORY="${PBS_USER}!${PBS_API_TOKEN_NAME}@${PBS_SERVER}:${PBS_DATASTORE}"
+```ini
+[backup@pbs!mytoken@pbs.example.com:backups]
+secret = xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
-
-> **Do not mix environment variables and the configuration file.** If
-> `PBS_REPOSITORY` (or its individual parts) is set in the environment, the
-> configuration file is ignored entirely. Define all variables in one place.
 
 ### Encryption
 
-Setting `PBS_ENCRYPTION_KEYFILE` passes `--keyfile` to `proxmox-backup-client`,
-so every backup is encrypted client-side with that key.
+Set `zpbs:keyfile` to the path of a key file and every backup of the dataset
+(and of its descendants, which inherit it) is encrypted client-side with that
+key. Unset means no encryption.
+
+```bash
+sudo zpbs-backup set keyfile=/etc/zpbs-backup/key.enc tank
+```
 
 - **Keep a copy of the key off this host.** Without it, encrypted backups
   cannot be restored. `proxmox-backup-client key paperkey` prints a
   recoverable paper copy.
 - **Scheduled runs cannot prompt for a passphrase.** Either create the key
-  without one (`proxmox-backup-client key create --kdf none /path/to/key.enc`)
-  or set `PBS_ENCRYPTION_PASSWORD` in the systemd unit's environment. The
-  config file does not pass `PBS_ENCRYPTION_PASSWORD` through.
+  without one (`proxmox-backup-client key create --kdf none /etc/zpbs-backup/key.enc`)
+  or set `PBS_ENCRYPTION_PASSWORD` in the systemd unit's environment
+  (`Environment=` in a drop-in). zpbs-backup passes the environment through
+  to `proxmox-backup-client` unchanged.
 
 Verify your configuration:
 
 ```bash
-zpbs-backup show-config
+zpbs-backup status --connections
+zpbs-backup check
 ```
 
 2. Enable backup on datasets:
@@ -208,6 +191,10 @@ zpbs-backup run --force
 | `zpbs:namespace` | string | auto-derived | PBS namespace |
 | `zpbs:priority` | 1-100 | 50 | Lower = backup first |
 | `zpbs:change-detection` | `legacy` / `data` / `metadata` | client default (`legacy`) | How `proxmox-backup-client` finds changed files |
+| `zpbs:repository` | `user@realm!token@server:datastore` | none (required) | PBS repository the dataset backs up to; inherited |
+| `zpbs:fingerprint` | `AA:BB:...` | none | PBS server certificate fingerprint; inherited |
+| `zpbs:keyfile` | absolute path | none (no encryption) | Encryption key file; inherited |
+| `zpbs:id-separator` | `[A-Za-z0-9_.-]+` | `-` | Backup ID separator; inherited. See [Backup ID Format](#backup-id-format) |
 
 `zpbs-backup set` accepts only these names and rejects any other with an error
 listing the valid ones. A `zpbs:` property set by other means (for example a
@@ -240,9 +227,9 @@ zpbs-backup get tank/data
 Display PBS connection configuration, source, and verify connectivity:
 
 ```bash
-zpbs-backup show-config              # Show active config + connection check
-zpbs-backup show-config --verbose    # Show all config sources in priority order
-zpbs-backup show-config --json       # Machine-parseable JSON (for automation)
+zpbs-backup status --connections     # Effective repository, fingerprint, keyfile, separator per dataset
+zpbs-backup check                    # One login per repository in use
+sudo zpbs-backup migrate-config      # Convert a 0.11.0 pbs.conf
 ```
 
 ### Status
@@ -364,6 +351,51 @@ zpbs-backup send-test-notification              # Send a test notification
 zpbs-backup send-test-notification --show-only  # Preview without sending
 ```
 
+## Connection Settings
+
+Dataset configuration lives in ZFS properties; secrets live in one root-only file.
+
+### Properties
+
+`zpbs:repository` (`user@realm!tokenname@server:datastore`, the string `proxmox-backup-client` takes as `PBS_REPOSITORY`), `zpbs:fingerprint`, `zpbs:keyfile` and `zpbs:id-separator` are inherited like every other property, normally set on the pool root. Pools or datasets may point at different datastores. `run` and `prune` group datasets by repository and handle each group with one connection.
+
+A backup-enabled dataset with no `zpbs:repository` counts as failed (in the run results, the exit code and the metrics) and no server is contacted for it.
+
+### Credentials file
+
+Secrets cannot be ZFS properties: any local user can read them with `zfs get all`. They go in `/etc/zpbs-backup/credentials`, INI format, owned by root, mode `0600`. Each section name is a repository string exactly as it appears in `zpbs:repository`:
+
+```ini
+[backup@pbs!mytoken@pbs.example.com:backups]
+secret = xxxxxxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+[backup@pbs!other@pbs2.example.com:offsite]
+secret = yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+```
+
+zpbs-backup refuses to read the file if it is not owned by root or is group- or world-accessible.
+
+**Binding rule.** A secret is used only for the exact repository string it is listed under (string comparison, no normalisation). ZFS can delegate property writes to non-root users (`zfs allow`); without the binding, such a user could set `zpbs:repository` to their own server and receive the host's token. A dataset whose repository has no entry **fails closed**: it is reported as failed and no server is contacted.
+
+### Reporting settings
+
+`ZPBS_PUSHGATEWAY`, `ZPBS_TEXTFILE_DIR`, `ZPBS_SYSLOG` and `ZPBS_NOTIFY` are systemd environment settings (`Environment=` in a drop-in, `systemctl edit zpbs-backup.service`). The packaged units do not read `pbs.conf`. `PBS_REPOSITORY`, `PBS_PASSWORD` and the other `PBS_*` connection variables are not read by zpbs-backup.
+
+### Commands
+
+```bash
+zpbs-backup status --connections   # per dataset: effective repository, fingerprint, keyfile, separator, each with its source dataset, and whether a credentials entry exists (never the secret)
+zpbs-backup check                  # one login per referenced repository; reports ok / no credential / rejected
+sudo zpbs-backup migrate-config    # convert pbs.conf into the credentials file plus properties
+```
+
+- `check` logs in once per repository used by a backup-enabled dataset. A repository with no credentials entry is reported as failed and not contacted. Exit status is non-zero if anything fails.
+- `migrate-config` reads `/etc/zpbs-backup/pbs.conf` (`--pbs-conf` for another path), writes the credentials file (never overwriting an existing one), and prints the `zfs set` commands for the pool roots. It runs them only with `--apply`. `ZPBS_*` reporting settings it finds are printed as `Environment=` lines for a drop-in. It leaves `pbs.conf` in place; delete it once the properties are set.
+
+### Backup ID separator
+
+`zpbs:id-separator` replaces `ZPBS_BACKUP_ID_SEPARATOR`. Changing it would rename every backup group on the server, so a property edit alone does not do that. On each backup zpbs-backup records the separator in use in the snapshot's PBS notes (`zpbs:id-separator=<value>`). On the next run, if the newest snapshot's recorded separator differs from the dataset's effective separator, that dataset fails with a message naming both values, and nothing else happens. Set the property back to clear it. Snapshots with no recorded separator (made before 0.12.0) are accepted, and the new snapshot records its separator. There is no command to rename existing groups in 0.12.0.
+
 ## Systemd Integration
 
 If you installed via `.deb` or `.rpm`, systemd units are already in place. Just start the timer after configuring PBS:
@@ -433,7 +465,7 @@ where `{sep}` is the configurable **backup-id separator** (default `-`):
 This default maintains compatibility with existing backup IDs from the bash
 scripts.
 
-### Reversible IDs (`ZPBS_BACKUP_ID_SEPARATOR`)
+### Reversible IDs (`zpbs:id-separator`)
 
 Because the default separator (`-`) is also a legal character in ZFS dataset
 names, the default ID is **not reversible**: a `-` in the ID may be a path
@@ -443,8 +475,8 @@ dataset layout from PBS group names alone during disaster recovery — set a
 multi-character separator that your dataset names do not contain:
 
 ```bash
-# environment or /etc/zpbs-backup/pbs.conf
-export ZPBS_BACKUP_ID_SEPARATOR="--"
+# property; inherited, set on the pool root
+zpbs-backup set id-separator=-- tank
 ```
 
 - Dataset `local-hdd/encrypted/device-backups` on host `s1-nas01`

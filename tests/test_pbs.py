@@ -180,7 +180,6 @@ class TestPBSClientBackup:
         config = PBSConfig(
             repository="user@realm!tokenname@server:datastore",
             password="test-token",
-            keyfile="/path/to/key.enc" if with_encryption else None
         )
         client = PBSClient(config)
 
@@ -190,6 +189,7 @@ class TestPBSClientBackup:
             client.backup(
                 backup_id="test-backup",
                 source_path="/test/path",
+                keyfile="/path/to/key.enc" if with_encryption else None,
             )
             assert streamed.call_args == umock.call(
                 [

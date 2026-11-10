@@ -1,66 +1,44 @@
-"""PBS connection configuration management."""
+"""PBS connection settings: repository parsing and the credentials file.
+
+Dataset-level settings (repository, fingerprint, keyfile, id separator) are
+ZFS properties; see zfs.py. The one thing a property cannot hold is the token
+secret, because any local user can read properties with ``zfs get``. Secrets
+live in a root-only credentials file, each bound to the exact repository
+string it is listed under.
+"""
 
 from __future__ import annotations
 
+import configparser
 import os
 import re
 import socket
-from dataclasses import dataclass, field
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 
-# Config file search order (first match with PBS_REPOSITORY wins).
-# Per-user config overrides system-wide.
-CONFIG_PATHS = [
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    / "zpbs-backup"
-    / "pbs.conf",
-    Path("/etc/zpbs-backup/pbs.conf"),
-]
-
-# All recognized environment variable names for PBS config
-_ENV_VAR_NAMES = [
-    "PBS_REPOSITORY",
-    "PBS_API_TOKEN_SECRET",
-    "PBS_PASSWORD",
-    "PBS_FINGERPRINT",
-    "PBS_USER",
-    "PBS_API_TOKEN_NAME",
-    "PBS_SERVER",
-    "PBS_DATASTORE",
-    "PBS_ENCRYPTION_KEYFILE",
-    # Metrics / observability
-    "ZPBS_PUSHGATEWAY",
-    "ZPBS_TEXTFILE_DIR",
-    # Backup-id derivation
-    "ZPBS_BACKUP_ID_SEPARATOR",
-    # Legacy aliases
-    "REPOSITORY",
-    "PASSWORD",
-    "FINGERPRINT",
-]
+CREDENTIALS_PATH = Path("/etc/zpbs-backup/credentials")
+LEGACY_CONFIG_PATH = Path("/etc/zpbs-backup/pbs.conf")
 
 # Default separator used when building a PBS backup-id from a dataset path.
 # "-" preserves historical ids ({hostname}-{path-with-slashes-as-dashes}).
 DEFAULT_BACKUP_ID_SEPARATOR = "-"
 
+# user@realm!tokenname@server[:port]:datastore
+_REPOSITORY_RE = re.compile(r"^([^!@\s]+@[^!@\s]+)!([^@\s]+)@([^:@\s]+(?::\d+)?):(\S+)$")
 
-@dataclass
-class ConfigSourceInfo:
-    """Information about a single config source."""
 
-    name: str  # e.g., "environment", "/etc/zpbs-backup/pbs.conf"
-    status: str  # "active", "found", "not found", "permission denied"
-    variables: dict[str, str] | None = None  # variable values if found
+class CredentialsError(Exception):
+    """The credentials file exists but cannot be trusted or parsed."""
 
 
 @dataclass
 class PBSConfig:
-    """Proxmox Backup Server connection configuration."""
+    """Connection settings for one Proxmox Backup Server repository."""
 
     repository: str
     password: str | None = None
     fingerprint: str | None = None
-    keyfile: str | None = None # None implies "do not encrypt"
 
     # Parsed display fields
     user: str | None = None
@@ -68,15 +46,21 @@ class PBSConfig:
     server: str | None = None
     datastore: str | None = None
 
-    # The string that replaces "/" in a dataset path (and joins the hostname
-    # prefix) when building the PBS backup-id. Default "-" keeps historical
-    # ids; set to e.g. "--" for a REVERSIBLE id when dataset name components
-    # may themselves contain "-" — split the id on the separator to recover
-    # the pool/dataset path (see Dataset.get_backup_id).
-    backup_id_separator: str = DEFAULT_BACKUP_ID_SEPARATOR
-
-    # Source tracking: variable name → source description
-    sources: dict[str, str] = field(default_factory=dict)
+    @classmethod
+    def from_repository(
+        cls, repository: str, password: str | None, fingerprint: str | None = None
+    ) -> PBSConfig:
+        """Build a config from a repository string, filling the parsed fields."""
+        user, token_name, server, datastore = parse_repository(repository)
+        return cls(
+            repository=repository,
+            password=password,
+            fingerprint=fingerprint,
+            user=user,
+            token_name=token_name,
+            server=server,
+            datastore=datastore,
+        )
 
     def get_env(self) -> dict[str, str]:
         """Return environment variables for proxmox-backup-client."""
@@ -87,168 +71,22 @@ class PBSConfig:
             env["PBS_FINGERPRINT"] = self.fingerprint
         return env
 
-    @property
-    def active_source(self) -> str:
-        """Return the primary config source description."""
-        # Find the source that provided PBS_REPOSITORY (or the composing vars)
-        repo_source = self.sources.get("PBS_REPOSITORY")
-        if repo_source:
-            return repo_source
-        user_source = self.sources.get("PBS_USER")
-        if user_source:
-            return user_source
-        return "unknown"
-
 
 def get_hostname() -> str:
     """Return the system hostname (short form)."""
     return socket.gethostname().split(".")[0]
 
 
-def mask_secret(secret: str | None) -> str:
-    """Mask a secret value for display."""
-    if not secret:
-        return "(not set)"
-    if len(secret) <= 4:
-        return "****"
-    return secret[:4] + "****"
+def parse_repository(repository: str) -> tuple[str | None, str | None, str | None, str | None]:
+    """Parse a repository into (user, token_name, server, datastore).
 
-
-def _parse_repository(repository: str) -> tuple[str | None, str | None, str | None, str | None]:
-    """Parse PBS_REPOSITORY into (user, token_name, server, datastore).
-
-    Format: user@realm!tokenname@server:datastore
+    Format: user@realm!tokenname@server[:port]:datastore
     Returns (None, None, None, None) for unparseable strings.
     """
-    match = re.match(r"^([^!@]+@[^!@]+)!([^@]+)@([^:]+):(.+)$", repository)
+    match = _REPOSITORY_RE.match(repository)
     if not match:
         return None, None, None, None
     return match.group(1), match.group(2), match.group(3), match.group(4)
-
-
-def load_config() -> PBSConfig:
-    """Load PBS configuration from environment variables or config files.
-
-    Priority:
-    1. Environment variables
-    2. Per-user config: ~/.config/zpbs-backup/pbs.conf
-    3. System config: /etc/zpbs-backup/pbs.conf
-
-    Returns:
-        PBSConfig instance
-
-    Raises:
-        ValueError: If PBS_REPOSITORY is not configured
-    """
-    sources: dict[str, str] = {}
-
-    # Try environment variables first
-    env_vars: dict[str, str] = {}
-    for name in _ENV_VAR_NAMES:
-        val = os.environ.get(name)
-        if val:
-            env_vars[name] = val
-            sources[name] = "environment"
-
-    has_repo = "PBS_REPOSITORY" in env_vars or "REPOSITORY" in env_vars
-    has_parts = all(
-        k in env_vars for k in ("PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE")
-    )
-
-    if has_repo or has_parts:
-        config = _config_from_variables(env_vars)
-        config.sources = sources
-        return config
-
-    # Try config files — merge variables from files in order
-    merged_vars: dict[str, str] = {}
-    for config_path in CONFIG_PATHS:
-        try:
-            if config_path.exists():
-                old_vars = dict(merged_vars)
-                file_vars = _parse_config_variables(config_path, merged_vars)
-                for key, value in file_vars.items():
-                    if key not in old_vars or old_vars[key] != value:
-                        sources[key] = str(config_path)
-                merged_vars = file_vars
-        except PermissionError:
-            continue
-
-    config = _config_from_variables(merged_vars)
-    config.sources = sources
-    if config.repository:
-        return config
-
-    raise ValueError(
-        "PBS_REPOSITORY not configured. Set environment variable or create "
-        "config file.\nHint: config files under /etc/zpbs-backup/ require "
-        "root access — try running with sudo."
-    )
-
-
-def get_all_config_sources() -> list[ConfigSourceInfo]:
-    """Return information about all config sources for diagnostic display.
-
-    Returns a list of ConfigSourceInfo in priority order (highest first).
-    """
-    result: list[ConfigSourceInfo] = []
-
-    # Check environment variables
-    env_vars: dict[str, str] = {}
-    for name in _ENV_VAR_NAMES:
-        val = os.environ.get(name)
-        if val:
-            env_vars[name] = val
-
-    if env_vars:
-        result.append(ConfigSourceInfo(
-            name="environment",
-            status="active" if _has_config(env_vars) else "found",
-            variables=env_vars,
-        ))
-    else:
-        result.append(ConfigSourceInfo(name="environment", status="not set"))
-
-    # Determine which source is actually active
-    env_is_active = result[0].status == "active"
-
-    # Check config files
-    for config_path in CONFIG_PATHS:
-        try:
-            if config_path.exists():
-                file_vars = _parse_config_variables(config_path)
-                has_config = _has_config(file_vars)
-                if has_config and not env_is_active:
-                    status = "active"
-                    env_is_active = True  # prevent later files from also being "active"
-                else:
-                    status = "found"
-                result.append(ConfigSourceInfo(
-                    name=str(config_path),
-                    status=status,
-                    variables=file_vars,
-                ))
-            else:
-                result.append(ConfigSourceInfo(
-                    name=str(config_path),
-                    status="not found",
-                ))
-        except PermissionError:
-            result.append(ConfigSourceInfo(
-                name=str(config_path),
-                status="permission denied",
-            ))
-
-    return result
-
-
-def _has_config(variables: dict[str, str]) -> bool:
-    """Check if variables contain enough info to build a PBS config."""
-    has_repo = bool(variables.get("PBS_REPOSITORY") or variables.get("REPOSITORY"))
-    has_parts = all(
-        variables.get(k) for k in ("PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE")
-    )
-    return has_repo or has_parts
 
 
 def validate_backup_id_separator(separator: str) -> str:
@@ -271,79 +109,132 @@ def validate_backup_id_separator(separator: str) -> str:
     return separator
 
 
-def _config_from_variables(variables: dict[str, str]) -> PBSConfig:
-    """Create PBSConfig from a dictionary of variables."""
-    # Get repository — direct or composed from parts
-    repository = variables.get("PBS_REPOSITORY", variables.get("REPOSITORY", ""))
+@dataclass
+class Credentials:
+    """Token secrets keyed by the exact repository string they belong to."""
 
-    user = variables.get("PBS_USER")
-    token_name = variables.get("PBS_API_TOKEN_NAME")
-    server = variables.get("PBS_SERVER")
-    datastore = variables.get("PBS_DATASTORE")
+    secrets: dict[str, str]
+    path: Path = CREDENTIALS_PATH
 
-    if not repository and all([user, token_name, server, datastore]):
-        repository = f"{user}!{token_name}@{server}:{datastore}"
+    def secret_for(self, repository: str) -> str | None:
+        """Return the secret listed under exactly this repository, else None.
 
-    # Get token secret — new name preferred, legacy aliases as fallback
-    password = variables.get(
-        "PBS_API_TOKEN_SECRET",
-        variables.get("PBS_PASSWORD", variables.get("PASSWORD")),
-    )
+        Exact string comparison, no normalisation: a user who can write
+        ``zpbs:repository`` must not be able to point the host's token at a
+        server of their choosing.
+        """
+        return self.secrets.get(repository) or None
 
-    fingerprint = variables.get("PBS_FINGERPRINT", variables.get("FINGERPRINT"))
-    keyfile = variables.get("PBS_ENCRYPTION_KEYFILE")
-
-    # Parse repository for display fields if not set from individual vars
-    if repository and not all([user, token_name, server, datastore]):
-        user, token_name, server, datastore = _parse_repository(repository)
-
-    separator = validate_backup_id_separator(
-        variables.get("ZPBS_BACKUP_ID_SEPARATOR") or DEFAULT_BACKUP_ID_SEPARATOR
-    )
-
-    return PBSConfig(
-        repository=repository,
-        password=password,
-        fingerprint=fingerprint,
-        user=user,
-        token_name=token_name,
-        server=server,
-        datastore=datastore,
-        keyfile=keyfile,
-        backup_id_separator=separator,
-    )
+    def has_entry(self, repository: str) -> bool:
+        return self.secret_for(repository) is not None
 
 
-def _parse_config_variables(
-    path: Path, existing_vars: dict[str, str] | None = None
-) -> dict[str, str]:
-    """Parse variables from a config file.
+def load_credentials(path: Path | None = None, owner_uid: int = 0) -> Credentials:
+    """Read the credentials file.
 
-    Supports both shell-style (VAR=value) and simple key=value formats.
-    Handles shell variable interpolation like ${VAR} and $VAR.
+    A missing file is an empty set of credentials (every dataset then fails
+    closed). A file that exists is refused unless it is owned by ``owner_uid``
+    (root) and grants nothing to group or others.
+
+    Args:
+        path: Credentials file; defaults to /etc/zpbs-backup/credentials
+        owner_uid: Required owner of the file (injectable for tests)
+
+    Raises:
+        CredentialsError: If the file is untrusted or malformed
     """
-    variables: dict[str, str] = dict(existing_vars) if existing_vars else {}
+    path = path if path is not None else CREDENTIALS_PATH
+
+    try:
+        handle = path.open()
+    except FileNotFoundError:
+        return Credentials({}, path)
+    except PermissionError as e:
+        raise CredentialsError(f"Cannot read {path}: {e.strerror}. Run as root.") from None
+
+    with handle:
+        info = os.fstat(handle.fileno())
+        if info.st_uid != owner_uid:
+            raise CredentialsError(
+                f"Refusing to read {path}: owned by uid {info.st_uid}, expected {owner_uid}."
+            )
+        if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise CredentialsError(
+                f"Refusing to read {path}: mode {stat.S_IMODE(info.st_mode):04o} lets other "
+                f"users read it. Run: chmod 600 {path}"
+            )
+
+        parser = configparser.ConfigParser(interpolation=None, delimiters=("=",))
+        try:
+            parser.read_file(handle)
+        except configparser.Error as e:
+            raise CredentialsError(f"Cannot parse {path}: {e}") from None
+
+    secrets = {
+        section: parser[section].get("secret", "").strip() for section in parser.sections()
+    }
+    return Credentials({repo: secret for repo, secret in secrets.items() if secret}, path)
+
+
+@dataclass
+class LegacyConfig:
+    """What an old pbs.conf held, for ``migrate-config``."""
+
+    repository: str | None
+    secret: str | None
+    fingerprint: str | None
+    keyfile: str | None
+    separator: str | None
+    reporting: dict[str, str]
+
+
+_REPORTING_VARS = ("ZPBS_PUSHGATEWAY", "ZPBS_TEXTFILE_DIR", "ZPBS_SYSLOG", "ZPBS_NOTIFY")
+
+
+def read_legacy_config(path: Path) -> LegacyConfig:
+    """Parse a 0.11.0-style shell-variable pbs.conf (read-only)."""
+    variables = _parse_config_variables(path)
+
+    repository = variables.get("PBS_REPOSITORY") or variables.get("REPOSITORY")
+    parts = [
+        variables.get(k) for k in ("PBS_USER", "PBS_API_TOKEN_NAME", "PBS_SERVER", "PBS_DATASTORE")
+    ]
+    if not repository and all(parts):
+        user, token, server, datastore = parts
+        repository = f"{user}!{token}@{server}:{datastore}"
+
+    return LegacyConfig(
+        repository=repository or None,
+        secret=(
+            variables.get("PBS_API_TOKEN_SECRET")
+            or variables.get("PBS_PASSWORD")
+            or variables.get("PASSWORD")
+            or None
+        ),
+        fingerprint=variables.get("PBS_FINGERPRINT") or variables.get("FINGERPRINT") or None,
+        keyfile=variables.get("PBS_ENCRYPTION_KEYFILE") or None,
+        separator=variables.get("ZPBS_BACKUP_ID_SEPARATOR") or None,
+        reporting={k: variables[k] for k in _REPORTING_VARS if variables.get(k)},
+    )
+
+
+def _parse_config_variables(path: Path) -> dict[str, str]:
+    """Parse shell-style (VAR=value) lines, resolving ${VAR} and $VAR."""
+    variables: dict[str, str] = {}
 
     with open(path) as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-
-            # Handle export VAR=value and VAR=value formats
-            if line.startswith("export "):
-                line = line[7:]
-
+            line = line.removeprefix("export ")
             if "=" not in line:
                 continue
 
             key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip("'\"")
-
-            # Resolve variable references in the value
-            value = _interpolate_variables(value, variables)
-            variables[key] = value
+            variables[key.strip()] = _interpolate_variables(
+                value.strip().strip("'\""), variables
+            )
 
     return variables
 
@@ -355,6 +246,4 @@ def _interpolate_variables(value: str, variables: dict[str, str]) -> str:
         var_name = match.group(1) or match.group(2)
         return variables.get(var_name, match.group(0))
 
-    # Match ${VAR} or $VAR (but not $$)
-    pattern = r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)"
-    return re.sub(pattern, replace_var, value)
+    return re.sub(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace_var, value)
