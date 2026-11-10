@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import subprocess
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -88,63 +88,93 @@ def _printed(orch: BackupOrchestrator) -> str:
 class TestUnchangedSkipReason:
     """Tests for BackupOrchestrator._unchanged_skip_reason."""
 
-    def test_skips_when_written_zero_and_snap_old_enough(self):
+    def test_skips_when_nothing_written_since_base_despite_newer_snapshot(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
-        snap_creation = int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS - 1
-        with patch.object(backup_mod, "get_written_bytes", return_value=0), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
+        last_backup = datetime.fromtimestamp(2_000_000)
+        ts = int(last_backup.timestamp())
+        snaps = [
+            ("old", ts - 5000),
+            ("base", ts - SKEW_MARGIN_SECONDS - 1),
+            ("sanoid-new", ts + 100),
+        ]
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=0) as written:
             reason = orch._unchanged_skip_reason(_ds(), last_backup)
         assert reason is not None
-        assert "unchanged" in reason
-        assert "written=0" in reason
+        assert reason.startswith("unchanged since base (backed up ")
+        written.assert_called_once_with("tank/data", "base")
 
-    def test_no_skip_when_written_nonzero(self):
+    def test_no_skip_when_written_since_base_nonzero(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
-        snap_creation = int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS - 1
-        with patch.object(backup_mod, "get_written_bytes", return_value=12345), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
+        last_backup = datetime.fromtimestamp(2_000_000)
+        ts = int(last_backup.timestamp())
+        snaps = [("base", ts - SKEW_MARGIN_SECONDS - 1), ("new", ts + 100)]
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=12345):
             assert orch._unchanged_skip_reason(_ds(), last_backup) is None
 
-    def test_no_skip_when_snap_within_safety_margin(self):
+    def test_base_boundary_is_inclusive(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
-        # Snap is exactly at the margin boundary — must NOT skip
-        snap_creation = int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS + 1
-        with patch.object(backup_mod, "get_written_bytes", return_value=0), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
-            assert orch._unchanged_skip_reason(_ds(), last_backup) is None
+        last_backup = datetime.fromtimestamp(2_000_000)
+        snaps = [("edge", int(last_backup.timestamp()) - SKEW_MARGIN_SECONDS)]
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=0):
+            reason = orch._unchanged_skip_reason(_ds(), last_backup)
+        assert reason is not None and "edge" in reason
 
-    def test_no_skip_when_snap_newer_than_last_backup(self):
+    def test_no_skip_when_no_snapshot_older_than_last_backup(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
-        snap_creation = int(last_backup.timestamp()) + 100  # after last backup
-        with patch.object(backup_mod, "get_written_bytes", return_value=0), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
+        last_backup = datetime.fromtimestamp(2_000_000)
+        ts = int(last_backup.timestamp())
+        snaps = [("within-margin", ts - SKEW_MARGIN_SECONDS + 1), ("after", ts + 100)]
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=0) as written:
             assert orch._unchanged_skip_reason(_ds(), last_backup) is None
+        written.assert_not_called()
 
     def test_no_skip_when_no_previous_backup(self):
         orch = _orch()
-        with patch.object(backup_mod, "get_written_bytes", return_value=0), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=1_000_000):
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=[("s", 1)]), \
+             patch.object(backup_mod, "get_written_since", return_value=0):
             assert orch._unchanged_skip_reason(_ds(), None) is None
 
     def test_no_skip_when_no_snapshots_exist(self):
         orch = _orch()
-        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
-        with patch.object(backup_mod, "get_written_bytes", return_value=0), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
+        last_backup = datetime.fromtimestamp(2_000_000)
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=[]), \
+             patch.object(backup_mod, "get_written_since", return_value=0):
+            assert orch._unchanged_skip_reason(_ds(), last_backup) is None
+
+    def test_no_skip_when_written_query_fails(self):
+        orch = _orch()
+        last_backup = datetime.fromtimestamp(2_000_000)
+        snaps = [("base", int(last_backup.timestamp()) - 1000)]
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=None):
             assert orch._unchanged_skip_reason(_ds(), last_backup) is None
 
     def test_no_skip_when_skew_check_failed(self):
         orch = _orch()
         orch.skip_unchanged_safe = False
-        last_backup = datetime.fromtimestamp(2_000_000, tz=UTC)
-        snap_creation = int(last_backup.timestamp()) - 1000
-        with patch.object(backup_mod, "get_written_bytes", return_value=0), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap_creation):
+        last_backup = datetime.fromtimestamp(2_000_000)
+        snaps = [("base", int(last_backup.timestamp()) - 1000)]
+        with patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=0):
             assert orch._unchanged_skip_reason(_ds(), last_backup) is None
+
+    def test_plan_reason_names_the_base_snapshot(self):
+        orch = _orch()
+        ds = _ds()
+        stale = datetime.now() - timedelta(days=2)
+        now_ts = int(datetime.now().timestamp())
+        snaps = [("autosnap_base", int(stale.timestamp()) - 1000), ("autosnap_new", now_ts)]
+        with patch.object(_client(orch), "get_last_backup_time", return_value=stale), \
+             patch.object(backup_mod, "list_snapshot_creations", return_value=snaps), \
+             patch.object(backup_mod, "get_written_since", return_value=0):
+            plan = orch.plan([ds])
+        assert plan[0].skip_cause is SkipCause.UNCHANGED
+        assert plan[0].skip_reason is not None
+        assert "autosnap_base" in plan[0].skip_reason
 
 
 class TestPlanScheduleCheck:
@@ -169,8 +199,7 @@ class TestPlanScheduleCheck:
         ds = _ds()
         stamped_late = (datetime.now() - timedelta(days=1)).replace(hour=3, minute=20)
         with patch.object(_client(orch), "get_last_backup_time", return_value=stamped_late), \
-             patch.object(backup_mod, "get_written_bytes", return_value=12345), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None):
+             patch.object(backup_mod, "list_snapshot_creations", return_value=[]):
             plan = orch.plan([ds])
         assert plan == [PlannedDataset(ds, True, last_backup=stamped_late)]
 
@@ -534,10 +563,10 @@ class TestSkipCauseAttribution:
         snap_creation = int(stale.timestamp()) - SKEW_MARGIN_SECONDS - 1
 
         with patch.object(_client(orch), "get_last_backup_time", return_value=stale), \
-             patch.object(backup_mod, "get_written_bytes", return_value=0), \
              patch.object(
-                 backup_mod, "get_latest_snapshot_creation", return_value=snap_creation
-             ):
+                 backup_mod, "list_snapshot_creations", return_value=[("base", snap_creation)]
+             ), \
+             patch.object(backup_mod, "get_written_since", return_value=0):
             plan = orch.plan([ds])
 
         assert plan[0].skip_cause is SkipCause.UNCHANGED
@@ -642,8 +671,7 @@ class TestFreshnessTimes:
         )
         with patch.object(backup_mod, "get_all_datasets", return_value=[ds]), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(backup_mod, "get_written_bytes", return_value=1), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=None), \
+             patch.object(backup_mod, "list_snapshot_creations", return_value=[]), \
              patch.object(_client(orch), "get_last_backup_time", return_value=last) as fetch, \
              patch.object(_client(orch), "create_namespace", return_value=True), \
              patch.object(_client(orch), "backup", return_value=completed):
@@ -780,8 +808,11 @@ class TestLastCurrentTimes:
         )
         with patch.object(backup_mod, "get_all_datasets", return_value=[_ds()]), \
              patch.object(orch, "_preflight_skew_check"), \
-             patch.object(backup_mod, "get_written_bytes", return_value=written), \
-             patch.object(backup_mod, "get_latest_snapshot_creation", return_value=snap), \
+             patch.object(
+                 backup_mod, "list_snapshot_creations",
+                 return_value=[] if snap is None else [("base", snap)],
+             ), \
+             patch.object(backup_mod, "get_written_since", return_value=written), \
              patch.object(_client(orch), "get_last_backup_time", return_value=last), \
              patch.object(_client(orch), "create_namespace", return_value=True), \
              patch.object(_client(orch), "backup", return_value=completed):
